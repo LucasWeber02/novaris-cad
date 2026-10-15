@@ -2,7 +2,7 @@
 // Multi-body geometry, part positioning, constraints
 
 use std::collections::HashMap;
-use nova_core::{Id, NovaError, Result};
+use nova_core::Id;
 use nova_math::{Vec3, Matrix4};
 use nova_kernel::BRep;
 
@@ -429,23 +429,4 @@ mod tests {
         let collisions = find_collisions(&assembly);
         assert!(!collisions.is_empty()); // Parts overlap
     }
-}
-
-fn main() {
-    println!("╔════════════════════════════════════════╗");
-    println!("║   NOVARIS CAD — Phase 3: Assembly    ║");
-    println!("║         Multi-body system              ║");
-    println!("╚════════════════════════════════════════╝\n");
-
-    let mut assembly = Assembly::new(Id::new(), "Sample Assembly".to_string());
-
-    let part1 = Part::new(Id::new(), "Base".to_string(), BRep::default());
-    let part2 = Part::new(Id::new(), "Cover".to_string(), BRep::default());
-
-    assembly.add_part(part1);
-    assembly.add_part(part2);
-
-    println!("✓ Assembly: {}", assembly.name);
-    println!("✓ Parts: {}", assembly.part_count());
-    println!("✓ Total Volume: {:.2} mm³", assembly.get_total_volume());
 }

@@ -108,7 +108,7 @@ impl FeatureTree {
     }
 
     /// Evaluate all features in order
-    pub fn evaluate(&self, context: &mut FeatureContext) -> Result<Vec<BRep>> {
+    pub fn evaluate(&self, _context: &mut FeatureContext) -> Result<Vec<BRep>> {
         let mut results = Vec::new();
 
         for feature in &self.features {

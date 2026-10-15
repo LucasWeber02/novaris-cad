@@ -16,7 +16,7 @@ fn main() -> nova_core::Result<()> {
     println!();
 
     // Create a demo document
-    let mut doc = Document::new("Demo Part");
+    let doc = Document::new("Demo Part");
     println!("✓ Created new document: '{}'", doc.name);
     println!("✓ Document ID: {}", doc.id);
     println!("✓ Version: {}", doc.version);

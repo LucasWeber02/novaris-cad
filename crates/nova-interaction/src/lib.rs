@@ -461,24 +461,3 @@ mod tests {
         assert!(new_distance < orig_distance);
     }
 }
-
-fn main() {
-    println!("╔════════════════════════════════════════╗");
-    println!("║ NOVARIS CAD — Phase 3: Interaction   ║");
-    println!("║  Ray casting, selection, camera      ║");
-    println!("╚════════════════════════════════════════╝\n");
-
-    let ray = Ray::new(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
-    println!("✓ Ray: origin={:?}, dir={:?}", ray.origin, ray.direction);
-
-    let mut mgr = SelectionManager::new();
-    let id = Id::new();
-    mgr.select_object(id, false);
-    println!("✓ Selection: {} objects selected", mgr.get_selection_count());
-
-    let mut camera = Camera::new(Vec3::new(10.0, 10.0, 10.0), Vec3::new(0.0, 0.0, 0.0));
-    camera.zoom(-1.0);
-    println!("✓ Camera: position={:?}, target={:?}", camera.position, camera.target);
-
-    println!("\n✓ nova-interaction IMPLEMENTATION — WORKING");
-}

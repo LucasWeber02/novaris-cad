@@ -402,39 +402,3 @@ mod tests {
         assert_eq!(time, 2.5);
     }
 }
-
-fn main() {
-    println!("╔════════════════════════════════════════╗");
-    println!("║ NOVARIS CAD — Phase 3 Week 4: Polish  ║");
-    println!("║  Undo/Redo, Shortcuts, Performance   ║");
-    println!("╚════════════════════════════════════════╝\n");
-
-    let mut history = CommandHistory::new(100);
-    history.push_command("CreateExtrusion".to_string());
-    history.push_command("ModifyParameter".to_string());
-    println!(
-        "✓ Command History: {} commands, can_undo={}",
-        history.get_history_count(),
-        history.can_undo()
-    );
-
-    let shortcuts = KeyboardShortcuts::new();
-    let binding = KeyBinding::ctrl_z();
-    if let Some(action) = shortcuts.get_action(&binding) {
-        println!("✓ Keyboard: {} → {:?}", binding.to_string(), action);
-    }
-
-    let mut metrics = PerformanceMetrics::new();
-    for _ in 0..60 {
-        metrics.record_frame_time(16.67);
-    }
-    metrics.record_operation("Extrude".to_string(), 0.8);
-    metrics.record_operation("Render".to_string(), 1.2);
-    println!(
-        "✓ Performance: {:.1} FPS, avg {:.2}ms/frame",
-        metrics.get_fps(),
-        metrics.get_average_frame_time()
-    );
-
-    println!("\n✓ nova-commands IMPLEMENTATION — WORKING");
-}

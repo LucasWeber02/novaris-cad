@@ -473,29 +473,3 @@ mod tests {
         assert!((len - 1.0).abs() < 1e-6);
     }
 }
-
-fn main() {
-    println!("╔════════════════════════════════════════╗");
-    println!("║  NOVARIS CAD — Phase 3: Shaders     ║");
-    println!("║  PBR lighting, shadows, materials    ║");
-    println!("╚════════════════════════════════════════╝\n");
-
-    let steel = Material::steel();
-    println!("✓ Material: {} (metallic={:.1}, rough={:.1})",
-             steel.name, steel.metallic, steel.roughness);
-
-    let light = Light::directional(
-        Vec3::new(0.0, -1.0, 0.0),
-        Vec3::new(1.0, 1.0, 1.0),
-        1.0,
-    );
-    println!("✓ Light: {} (brightness={:.2})", light.name, light.get_brightness());
-
-    let shader = ShaderProgram::pbr_shader();
-    println!("✓ Shader: {} (compiled: {})", shader.name, shader.compiled);
-
-    let shadow = ShadowMap::new(512, 512, Vec3::new(0.0, 10.0, 0.0));
-    println!("✓ Shadow Map: {}x{}", shadow.width, shadow.height);
-
-    println!("\n✓ nova-shaders IMPLEMENTATION — WORKING");
-}

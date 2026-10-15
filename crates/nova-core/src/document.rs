@@ -1,6 +1,6 @@
 //! Document model - the container for a complete CAD project
 
-use crate::{Id, Result};
+use crate::Id;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

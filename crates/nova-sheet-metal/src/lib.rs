@@ -4,7 +4,6 @@
 use std::f64::consts::PI;
 use nova_core::Id;
 use nova_math::Vec3;
-use nova_kernel::BRep;
 
 // ═══════════════════════════════════════════════════════════
 // SHEET METAL PROPERTIES
@@ -341,24 +340,4 @@ mod tests {
         assert_eq!(pattern.calculate_total_instances(), 2);
         assert!(pattern.is_valid());
     }
-}
-
-fn main() {
-    println!("╔════════════════════════════════════════╗");
-    println!("║  NOVARIS CAD — Phase 3: Sheet Metal  ║");
-    println!("║  Bends, unfold, patterns, relief     ║");
-    println!("╚════════════════════════════════════════╝\n");
-
-    let props = SheetMetalProperties::new(Id::new(), 2.0, 5.0);
-    println!("✓ Sheet Metal: thickness={:.1}mm, radius={:.1}mm", props.thickness, props.bend_radius);
-
-    let bend = Bend::new(Id::new(), 90.0, 5.0, 100.0);
-    println!("✓ Bend: angle={:.1}°, flat length={:.2}mm",
-             bend.angle, bend.calculate_flat_length(0.4));
-
-    let mut pattern = FlatPattern::new(Id::new(), "TestPattern".to_string());
-    pattern.add_bend(bend);
-    println!("✓ Flat Pattern: {} bends", pattern.bends.len());
-
-    println!("\n✓ nova-sheet-metal IMPLEMENTATION — WORKING");
 }
