@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 nova-core = { path = "../nova-core" }
 serde = { workspace = true }
+nalgebra = { workspace = true }

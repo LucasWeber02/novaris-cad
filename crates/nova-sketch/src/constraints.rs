@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ConstraintType {
     /// Point is fixed at (x, y)
-    Fixed { x: f64, y: f64 },
+    Fixed { point: Id, x: f64, y: f64 },
     /// Horizontal line
     Horizontal { line_id: Id },
     /// Vertical line
@@ -47,8 +47,8 @@ impl Constraint {
         }
     }
 
-    pub fn fixed(x: f64, y: f64) -> Self {
-        Constraint::new(ConstraintType::Fixed { x, y })
+    pub fn fixed(point: Id, x: f64, y: f64) -> Self {
+        Constraint::new(ConstraintType::Fixed { point, x, y })
     }
 
     pub fn horizontal(line_id: Id) -> Self {
@@ -61,6 +61,10 @@ impl Constraint {
 
     pub fn distance(p1: Id, p2: Id, distance: f64) -> Self {
         Constraint::new(ConstraintType::Distance { p1, p2, distance })
+    }
+
+    pub fn length(line_id: Id, length: f64) -> Self {
+        Constraint::new(ConstraintType::Length { line_id, length })
     }
 
     pub fn radius(circle_id: Id, radius: f64) -> Self {

@@ -6,7 +6,7 @@ pub mod solver;
 
 pub use geometry::{SketchPoint, SketchLine, SketchCircle, SketchElement};
 pub use constraints::{Constraint, ConstraintType};
-pub use solver::SketchSolver;
+pub use solver::{SketchSolver, SolveReport, SolveStatus};
 
 use nova_core::{Id, Result};
 use std::collections::HashMap;
@@ -84,18 +84,17 @@ impl Sketch {
     }
 
     /// Solve constraints and update geometry
-    pub fn solve(&mut self) -> Result<()> {
+    pub fn solve(&mut self) -> Result<SolveReport> {
         let mut solver = SketchSolver::new(self);
-        solver.solve()?;
-        self.is_fully_constrained = solver.is_fully_constrained();
-        Ok(())
+        let report = solver.solve()?;
+        let fully = solver.is_fully_constrained();
+        self.is_fully_constrained = fully;
+        Ok(report)
     }
 
-    /// Count degrees of freedom
-    pub fn degrees_of_freedom(&self) -> i32 {
-        let n_points = self.elements.iter().filter(|(_, e)| matches!(e, SketchElement::Point(_))).count();
-        let dof = (n_points * 2) as i32 - self.constraints.len() as i32;
-        dof.max(0)
+    /// Remaining degrees of freedom at the current geometry
+    pub fn degrees_of_freedom(&mut self) -> i32 {
+        SketchSolver::new(self).degrees_of_freedom()
     }
 }
 
