@@ -5,9 +5,15 @@
 
 pub mod extrusion;
 pub mod brep;
+pub mod plane;
+pub mod profile;
+pub mod solid;
 
 pub use extrusion::extrude_profile;
 pub use brep::BRep;
+pub use plane::Plane;
+pub use profile::{ArcGeom, Loop, Profile, Segment};
+pub use solid::{BooleanOp, Prism, RenderMesh, Solid};
 
 use nova_core::Result;
 use nova_geometry::Mesh;

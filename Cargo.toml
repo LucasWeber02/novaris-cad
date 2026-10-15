@@ -58,3 +58,7 @@ log = "0.4"
 opt-level = 3
 lto = "thin"
 codegen-units = 16
+
+# Geometry (Truck) and rendering crates are very slow unoptimised
+[profile.dev.package."*"]
+opt-level = 2

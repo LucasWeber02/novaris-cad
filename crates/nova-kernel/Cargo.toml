@@ -14,9 +14,11 @@ serde = { workspace = true }
 glam = { workspace = true }
 nalgebra = { workspace = true }
 
-# Geometry kernel — Truck (pure Rust)
-# Note: Truck API is complex; starting simple, will expand
-truck-base = "0.3"
+# Geometry kernel — Truck (pure Rust B-Rep)
+truck-modeling = "0.6"
+truck-shapeops = "0.4"
+truck-meshalgo = "0.4"
+truck-stepio = "0.3"
 
 [dev-dependencies]
 approx = { workspace = true }
