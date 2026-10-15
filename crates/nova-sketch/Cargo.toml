@@ -7,5 +7,10 @@ license.workspace = true
 
 [dependencies]
 nova-core = { path = "../nova-core" }
+nova-kernel = { path = "../nova-kernel" }
+glam = { workspace = true }
 serde = { workspace = true }
 nalgebra = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

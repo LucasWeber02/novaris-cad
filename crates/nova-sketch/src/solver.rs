@@ -58,6 +58,8 @@ pub struct SketchSolver<'a> {
     vars: Vec<Var>,
     point_index: HashMap<Id, usize>,
     circle_index: HashMap<Id, usize>,
+    /// Arcs, whose end points must stay at equal distance from the center
+    arcs: Vec<(Id, Id, Id)>,
     report: Option<SolveReport>,
 }
 
@@ -65,13 +67,17 @@ impl<'a> SketchSolver<'a> {
     pub fn new(sketch: &'a mut Sketch) -> Self {
         let mut points: Vec<Id> = Vec::new();
         let mut circles: Vec<Id> = Vec::new();
+        let mut arcs = Vec::new();
         for (id, element) in &sketch.elements {
             match element {
                 SketchElement::Point(_) => points.push(*id),
                 SketchElement::Circle(_) => circles.push(*id),
+                SketchElement::Arc(a) => arcs.push((a.id, a.center, a.start, a.end)),
                 SketchElement::Line(_) => {}
             }
         }
+        arcs.sort_by_key(|a| a.0.uuid());
+        let arcs = arcs.into_iter().map(|(_, c, s, e)| (c, s, e)).collect();
         // Stable ordering so results don't depend on HashMap iteration order
         points.sort_by_key(|id| id.uuid());
         circles.sort_by_key(|id| id.uuid());
@@ -94,6 +100,7 @@ impl<'a> SketchSolver<'a> {
             vars,
             point_index,
             circle_index,
+            arcs,
             report: None,
         }
     }
@@ -209,6 +216,25 @@ impl<'a> SketchSolver<'a> {
         Ok((b.0 - a.0, b.1 - a.1))
     }
 
+    /// Center and radius of a circle or arc
+    fn curve(&self, id: Id, x: &DVector<f64>) -> Result<((f64, f64), f64)> {
+        match self.sketch.elements.get(&id) {
+            Some(SketchElement::Circle(c)) => {
+                let i = self.circle_index[&id];
+                Ok((self.pt(c.center, x)?, x[i]))
+            }
+            Some(SketchElement::Arc(a)) => {
+                let (c, s) = (self.pt(a.center, x)?, self.pt(a.start, x)?);
+                Ok((c, norm((s.0 - c.0, s.1 - c.1))))
+            }
+            _ => Err(NovaError::InvalidSketch(format!("constraint references unknown circle or arc {}", id))),
+        }
+    }
+
+    fn is_line(&self, id: Id) -> bool {
+        matches!(self.sketch.elements.get(&id), Some(SketchElement::Line(_)))
+    }
+
     fn constraint_residuals(&self, c: &ConstraintType, x: &DVector<f64>) -> Result<Vec<f64>> {
         Ok(match *c {
             ConstraintType::Fixed { point, x: fx, y: fy } => {
@@ -244,11 +270,34 @@ impl<'a> SketchSolver<'a> {
             ConstraintType::Length { line_id, length } => {
                 vec![norm(self.line_dir(line_id, x)?) - length]
             }
-            ConstraintType::Radius { circle_id, radius } => {
-                let i = self.circle_index.get(&circle_id).copied().ok_or_else(|| {
-                    NovaError::InvalidSketch(format!("constraint references unknown circle {}", circle_id))
-                })?;
-                vec![x[i] - radius]
+            ConstraintType::Radius { circle_id, radius } => vec![self.curve(circle_id, x)?.1 - radius],
+            ConstraintType::Tangent { line, curve } => {
+                let (a, b) = self.line(line, x)?;
+                let (c, r) = self.curve(curve, x)?;
+                let d = (b.0 - a.0, b.1 - a.1);
+                let dist = (d.0 * (c.1 - a.1) - d.1 * (c.0 - a.0)).abs() / norm(d).max(f64::EPSILON);
+                vec![dist - r]
+            }
+            ConstraintType::PointOnLine { point, line } => {
+                let (a, b) = self.line(line, x)?;
+                let p = self.pt(point, x)?;
+                let d = (b.0 - a.0, b.1 - a.1);
+                vec![(d.0 * (p.1 - a.1) - d.1 * (p.0 - a.0)) / norm(d).max(f64::EPSILON)]
+            }
+            ConstraintType::PointOnCircle { point, curve } => {
+                let p = self.pt(point, x)?;
+                let (c, r) = self.curve(curve, x)?;
+                vec![norm((p.0 - c.0, p.1 - c.1)) - r]
+            }
+            ConstraintType::Equal { e1, e2 } => match (self.is_line(e1), self.is_line(e2)) {
+                (true, true) => vec![norm(self.line_dir(e1, x)?) - norm(self.line_dir(e2, x)?)],
+                (false, false) => vec![self.curve(e1, x)?.1 - self.curve(e2, x)?.1],
+                _ => return Err(NovaError::InvalidSketch("equal relation needs two lines or two circles/arcs".into())),
+            },
+            ConstraintType::Midpoint { point, line } => {
+                let (a, b) = self.line(line, x)?;
+                let p = self.pt(point, x)?;
+                vec![p.0 - (a.0 + b.0) / 2.0, p.1 - (a.1 + b.1) / 2.0]
             }
             ConstraintType::EqualX { p1, p2 } => vec![self.pt(p1, x)?.0 - self.pt(p2, x)?.0],
             ConstraintType::EqualY { p1, p2 } => vec![self.pt(p1, x)?.1 - self.pt(p2, x)?.1],
@@ -259,6 +308,10 @@ impl<'a> SketchSolver<'a> {
         let mut r = Vec::new();
         for c in &self.sketch.constraints {
             r.extend(self.constraint_residuals(&c.constraint_type, x)?);
+        }
+        for &(c, s, e) in &self.arcs {
+            let (c, s, e) = (self.pt(c, x)?, self.pt(s, x)?, self.pt(e, x)?);
+            r.push(norm((s.0 - c.0, s.1 - c.1)) - norm((e.0 - c.0, e.1 - c.1)));
         }
         Ok(DVector::from_vec(r))
     }
@@ -550,6 +603,71 @@ mod tests {
 
         assert_eq!(report.status, SolveStatus::Inconsistent);
         assert!(!sketch.constraints.iter().all(|c| c.is_satisfied));
+    }
+
+    #[test]
+    fn test_arc_keeps_equal_radii_and_dof() {
+        let mut sketch = Sketch::new("Arc");
+        let c = sketch.add_point(0.0, 0.0);
+        let s = sketch.add_point(10.0, 0.0);
+        let e = sketch.add_point(0.0, 7.0);
+        sketch.add_arc(c, s, e).unwrap();
+        let report = sketch.solve().unwrap();
+        let (pc, ps, pe) = (sketch.get_point(c).unwrap(), sketch.get_point(s).unwrap(), sketch.get_point(e).unwrap());
+        assert!(((ps.x - pc.x).hypot(ps.y - pc.y) - (pe.x - pc.x).hypot(pe.y - pc.y)).abs() < EPS);
+        // 6 coordinates - 1 intrinsic equation
+        assert_eq!(report.dof, 5);
+    }
+
+    #[test]
+    fn test_tangent_line_and_circle() {
+        let mut sketch = Sketch::new("T");
+        let c = sketch.add_point(0.0, 0.0);
+        let circle = sketch.add_circle(c, 5.0).unwrap();
+        let a = sketch.add_point(-10.0, 8.0);
+        let b = sketch.add_point(10.0, 7.0);
+        let l = sketch.add_line(a, b).unwrap();
+        sketch.add_constraint(Constraint::fixed(c, 0.0, 0.0));
+        sketch.add_constraint(Constraint::radius(circle, 5.0));
+        sketch.add_constraint(Constraint::horizontal(l));
+        sketch.add_constraint(Constraint::new(ConstraintType::Tangent { line: l, curve: circle }));
+        sketch.solve().unwrap();
+        let (pa, pb) = (sketch.get_point(a).unwrap(), sketch.get_point(b).unwrap());
+        assert!((pa.y - 5.0).abs() < EPS && (pb.y - 5.0).abs() < EPS, "{:?} {:?}", pa, pb);
+    }
+
+    #[test]
+    fn test_point_on_line_circle_midpoint_equal() {
+        let mut sketch = Sketch::new("M");
+        let a = sketch.add_point(0.0, 0.0);
+        let b = sketch.add_point(10.0, 0.0);
+        let l = sketch.add_line(a, b).unwrap();
+        let m = sketch.add_point(3.0, 2.0);
+        let q = sketch.add_point(4.0, 4.0);
+        let c = sketch.add_point(20.0, 0.0);
+        let circle = sketch.add_circle(c, 3.0).unwrap();
+        let c2 = sketch.add_point(40.0, 0.0);
+        let circle2 = sketch.add_circle(c2, 1.0).unwrap();
+        sketch.add_constraint(Constraint::new(ConstraintType::Midpoint { point: m, line: l }));
+        sketch.add_constraint(Constraint::new(ConstraintType::PointOnCircle { point: q, curve: circle }));
+        sketch.add_constraint(Constraint::new(ConstraintType::Equal { e1: circle, e2: circle2 }));
+        let p = sketch.add_point(1.0, 5.0);
+        sketch.add_constraint(Constraint::new(ConstraintType::PointOnLine { point: p, line: l }));
+        sketch.solve().unwrap();
+
+        let get = |id| sketch.get_point(id).unwrap();
+        let (pa, pb, pm) = (get(a), get(b), get(m));
+        assert!((pm.x - (pa.x + pb.x) / 2.0).abs() < EPS && (pm.y - (pa.y + pb.y) / 2.0).abs() < EPS);
+        let r = |id| match sketch.elements.get(&id) {
+            Some(SketchElement::Circle(c)) => c.radius,
+            _ => unreachable!(),
+        };
+        assert!((r(circle) - r(circle2)).abs() < EPS);
+        let (pq, pc) = (get(q), get(c));
+        assert!(((pq.x - pc.x).hypot(pq.y - pc.y) - r(circle)).abs() < EPS);
+        let pp = get(p);
+        let cross = (pb.x - pa.x) * (pp.y - pa.y) - (pb.y - pa.y) * (pp.x - pa.x);
+        assert!(cross.abs() < 1e-5);
     }
 
     #[test]

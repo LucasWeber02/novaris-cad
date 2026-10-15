@@ -39,12 +39,23 @@ pub struct SketchCircle {
     pub radius: f64,
 }
 
+/// A circular arc going counter-clockwise from `start` to `end` around
+/// `center`. The solver keeps both end points at the same radius.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SketchArc {
+    pub id: Id,
+    pub center: Id,
+    pub start: Id,
+    pub end: Id,
+}
+
 /// Any sketch element (point, line, circle, etc.)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SketchElement {
     Point(SketchPoint),
     Line(SketchLine),
     Circle(SketchCircle),
+    Arc(SketchArc),
 }
 
 impl SketchElement {
@@ -53,6 +64,7 @@ impl SketchElement {
             SketchElement::Point(p) => p.id,
             SketchElement::Line(l) => l.id,
             SketchElement::Circle(c) => c.id,
+            SketchElement::Arc(a) => a.id,
         }
     }
 }
