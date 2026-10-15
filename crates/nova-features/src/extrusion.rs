@@ -104,5 +104,3 @@ mod tests {
         assert_eq!(profile.len(), 4); // Rectangle has 4 points
     }
 }
-
-use nova_sketch::Sketch;

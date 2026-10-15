@@ -9,6 +9,11 @@ members = [
     "crates/nova-features",
     "crates/nova-ui",
     "crates/nova-io",
+    "crates/nova-assembly",
+    "crates/nova-sheet-metal",
+    "crates/nova-interaction",
+    "crates/nova-shaders",
+    "crates/nova-commands",
     "apps/desktop",
 ]
 resolver = "2"

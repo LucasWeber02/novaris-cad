@@ -144,7 +144,7 @@ pub enum KeyCode {
     Escape,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Modifier {
     Ctrl,
     Shift,
@@ -207,7 +207,7 @@ impl KeyBinding {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Undo,
     Redo,

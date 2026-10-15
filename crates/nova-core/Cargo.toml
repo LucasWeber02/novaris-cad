@@ -11,5 +11,6 @@ serde_json = { workspace = true }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+glam = { workspace = true }
 
 [dev-dependencies]

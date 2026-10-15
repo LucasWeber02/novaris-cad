@@ -4,7 +4,7 @@
 use std::f64::consts::PI;
 use nova_core::Id;
 use nova_math::Vec3;
-use nova_geometry::BRep;
+use nova_kernel::BRep;
 
 // ═══════════════════════════════════════════════════════════
 // SHEET METAL PROPERTIES
@@ -69,7 +69,7 @@ impl Bend {
     pub fn new(id: Id, angle: f64, radius: f64, length: f64) -> Self {
         Bend {
             id,
-            name: format!("Bend{}", id.0),
+            name: format!("Bend{}", id),
             angle,
             radius,
             length,
@@ -186,7 +186,7 @@ impl FlatPattern {
     pub fn get_bending_sequence(&self) -> Vec<String> {
         self.bending_sequence
             .iter()
-            .map(|id| format!("Bend{}", id.0))
+            .map(|id| format!("Bend{}", id))
             .collect()
     }
 }
@@ -217,7 +217,7 @@ impl PatternFeature {
     pub fn new_linear(id: Id, count: usize, spacing: f64) -> Self {
         PatternFeature {
             id,
-            name: format!("LinearPattern{}", id.0),
+            name: format!("LinearPattern{}", id),
             pattern_type: PatternType::Linear,
             count,
             spacing,
@@ -230,7 +230,7 @@ impl PatternFeature {
         let angle = 360.0 / count as f64;
         PatternFeature {
             id,
-            name: format!("CircularPattern{}", id.0),
+            name: format!("CircularPattern{}", id),
             pattern_type: PatternType::Circular,
             count,
             spacing: 0.0,
@@ -242,7 +242,7 @@ impl PatternFeature {
     pub fn new_mirror(id: Id) -> Self {
         PatternFeature {
             id,
-            name: format!("Mirror{}", id.0),
+            name: format!("Mirror{}", id),
             pattern_type: PatternType::Mirror,
             count: 2,
             spacing: 0.0,

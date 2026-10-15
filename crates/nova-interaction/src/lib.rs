@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use nova_core::Id;
 use nova_math::Vec3;
-use nova_geometry::BRep;
+use nova_kernel::BRep;
 
 // ═══════════════════════════════════════════════════════════
 // RAY CASTING
@@ -54,7 +54,7 @@ impl RayTriangleIntersection {
         RayTriangleIntersection {
             hit: false,
             distance: f64::MAX,
-            point: Vec3::zero(),
+            point: Vec3::ZERO,
             barycentric: (0.0, 0.0, 0.0),
         }
     }
@@ -235,15 +235,15 @@ impl Picker {
 
         // Try all triangles in the mesh
         for (face_idx, face) in geometry.faces.iter().enumerate() {
-            if face.len() < 3 {
+            if face.vertices.len() < 3 {
                 continue;
             }
 
             // Split face into triangles (fan triangulation)
-            for tri_idx in 1..(face.len() - 1) {
-                let v0_idx = face[0];
-                let v1_idx = face[tri_idx];
-                let v2_idx = face[tri_idx + 1];
+            for tri_idx in 1..(face.vertices.len() - 1) {
+                let v0_idx = face.vertices[0];
+                let v1_idx = face.vertices[tri_idx];
+                let v2_idx = face.vertices[tri_idx + 1];
 
                 if v0_idx >= geometry.vertices.len()
                     || v1_idx >= geometry.vertices.len()
@@ -408,6 +408,7 @@ mod tests {
     #[test]
     fn test_face_selection() {
         let mut mgr = SelectionManager::new();
+        mgr.selection_mode = SelectionMode::Face;
         let id = Id::new();
 
         mgr.select_face(id, 0, false);

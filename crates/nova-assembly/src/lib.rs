@@ -2,9 +2,9 @@
 // Multi-body geometry, part positioning, constraints
 
 use std::collections::HashMap;
-use nova_core::{Id, Error, Result};
+use nova_core::{Id, NovaError, Result};
 use nova_math::{Vec3, Matrix4};
-use nova_geometry::BRep;
+use nova_kernel::BRep;
 
 // ═══════════════════════════════════════════════════════════
 // PART — Individual solid with transformation
@@ -26,28 +26,28 @@ impl Part {
             id,
             name,
             geometry,
-            transform: Matrix4::identity(),
+            transform: Matrix4::IDENTITY,
             visible: true,
             material: Material::default(),
         }
     }
 
     pub fn set_position(&mut self, x: f64, y: f64, z: f64) {
-        self.transform = Matrix4::translation(Vec3::new(x, y, z));
+        self.transform = Matrix4::from_translation(Vec3::new(x, y, z));
     }
 
     pub fn set_rotation(&mut self, rx: f64, ry: f64, rz: f64) {
-        let rot_x = Matrix4::rotation_x(rx);
-        let rot_y = Matrix4::rotation_y(ry);
-        let rot_z = Matrix4::rotation_z(rz);
-        self.transform = rot_z.multiply(&rot_y.multiply(&rot_x));
+        let rot_x = Matrix4::from_rotation_x(rx);
+        let rot_y = Matrix4::from_rotation_y(ry);
+        let rot_z = Matrix4::from_rotation_z(rz);
+        self.transform = rot_z * rot_y * rot_x;
     }
 
     pub fn get_world_vertices(&self) -> Vec<Vec3> {
         self.geometry
             .vertices
             .iter()
-            .map(|v| self.transform.transform_point(*v))
+            .map(|v| self.transform.transform_point3(*v))
             .collect()
     }
 
@@ -58,7 +58,7 @@ impl Part {
     pub fn get_bounds(&self) -> (Vec3, Vec3) {
         let vertices = self.get_world_vertices();
         if vertices.is_empty() {
-            return (Vec3::zero(), Vec3::zero());
+            return (Vec3::ZERO, Vec3::ZERO);
         }
 
         let mut min = vertices[0];
@@ -199,7 +199,7 @@ impl Assembly {
 
     pub fn get_assembly_bounds(&self) -> (Vec3, Vec3) {
         if self.parts.is_empty() {
-            return (Vec3::zero(), Vec3::zero());
+            return (Vec3::ZERO, Vec3::ZERO);
         }
 
         let mut min = Vec3::new(f64::MAX, f64::MAX, f64::MAX);
@@ -324,12 +324,12 @@ mod tests {
                 Vec3::new(0.0, 60.0, 20.0),
             ],
             faces: vec![
-                vec![0, 1, 2, 3],
-                vec![4, 7, 6, 5],
-                vec![0, 4, 5, 1],
-                vec![1, 5, 6, 2],
-                vec![2, 6, 7, 3],
-                vec![3, 7, 4, 0],
+                nova_kernel::brep::Face { vertices: vec![0, 1, 2, 3] },
+                nova_kernel::brep::Face { vertices: vec![4, 7, 6, 5] },
+                nova_kernel::brep::Face { vertices: vec![0, 4, 5, 1] },
+                nova_kernel::brep::Face { vertices: vec![1, 5, 6, 2] },
+                nova_kernel::brep::Face { vertices: vec![2, 6, 7, 3] },
+                nova_kernel::brep::Face { vertices: vec![3, 7, 4, 0] },
             ],
         };
 
@@ -342,7 +342,7 @@ mod tests {
         let part = create_test_part(id, "TestPart");
         assert_eq!(part.name, "TestPart");
         assert_eq!(part.visible, true);
-        assert!(part.transform.is_identity());
+        assert_eq!(part.transform, Matrix4::IDENTITY);
     }
 
     #[test]

@@ -35,14 +35,14 @@ impl<'a> SketchSolver<'a> {
 
         // Apply simple constraint satisfaction
         for constraint in &mut self.sketch.constraints {
-            self.apply_constraint(constraint)?;
+            Self::apply_constraint(constraint)?;
         }
 
         Ok(())
     }
 
     /// Apply a single constraint
-    fn apply_constraint(&self, constraint: &mut crate::Constraint) -> Result<()> {
+    fn apply_constraint(constraint: &mut crate::Constraint) -> Result<()> {
         match &constraint.constraint_type {
             ConstraintType::Fixed { x, y } => {
                 // This would move the point to (x, y) if needed
@@ -134,5 +134,3 @@ mod tests {
         assert!(solver.is_fully_constrained());
     }
 }
-
-use crate::Sketch;

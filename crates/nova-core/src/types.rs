@@ -34,7 +34,7 @@ impl Transform {
 
     /// Get position
     pub fn position(&self) -> Vector3 {
-        self.matrix.translation()
+        self.matrix.w_axis.truncate()
     }
 
     /// Apply to point

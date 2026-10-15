@@ -7,6 +7,7 @@ edition = "2021"
 nova-core = { path = "../nova-core" }
 nova-math = { path = "../nova-math" }
 nova-geometry = { path = "../nova-geometry" }
+nova-kernel = { path = "../nova-kernel" }
 nova-features = { path = "../nova-features" }
 
 [lib]
