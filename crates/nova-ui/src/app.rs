@@ -8,7 +8,10 @@ use crate::sketcher::{self, Preview, SelItem, Sketcher, Tool};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use glam::{DVec2, DVec3};
 use nova_core::Id;
-use nova_features::{EndCondition, Extrude, ExtrudeOp, FeatureId, FeatureKind, FeatureState, FeatureTree};
+use nova_features::{
+    Axis, EndCondition, Extrude, ExtrudeOp, FeatureId, FeatureKind, FeatureState, FeatureTree, Hole, HoleKind, Pattern,
+    PatternKind, PlaneBase, RefPlane, RevolveFeature,
+};
 use nova_io::PartDocument;
 use nova_kernel::{Plane, RenderMesh};
 use nova_sketch::{ConstraintType, Sketch, SketchElement, SolveStatus};
@@ -62,8 +65,8 @@ enum Selection {
     Feature(FeatureId),
 }
 
-/// Extrude PropertyManager state
-struct ExtrudeEditor {
+/// PropertyManager state for a feature being created or edited
+struct FeatureEditor {
     feature: FeatureId,
     /// Tree before the edit, restored on cancel
     before: FeatureTree,
@@ -110,7 +113,7 @@ pub struct NovarisApp {
     sketcher: Option<Sketcher>,
     /// Rollback position to restore after editing a sketch
     saved_rollback: Option<Option<usize>>,
-    extrude_editor: Option<ExtrudeEditor>,
+    feature_editor: Option<FeatureEditor>,
     file_dialog: Option<FileDialog>,
     dim_edit: Option<DimEdit>,
     rename: Option<(FeatureId, String)>,
@@ -144,7 +147,7 @@ impl NovarisApp {
             hover_face: None,
             sketcher: None,
             saved_rollback: None,
-            extrude_editor: None,
+            feature_editor: None,
             file_dialog: None,
             dim_edit: None,
             rename: None,
@@ -195,7 +198,7 @@ impl NovarisApp {
 
     fn after_history_change(&mut self) {
         self.selection = Selection::None;
-        self.extrude_editor = None;
+        self.feature_editor = None;
         self.dirty = true;
         self.rebuild();
     }
@@ -215,7 +218,7 @@ impl NovarisApp {
         self.undo.clear();
         self.redo.clear();
         self.sketcher = None;
-        self.extrude_editor = None;
+        self.feature_editor = None;
         self.selection = Selection::None;
         self.fit_pending = true;
         self.camera = Camera::default();
@@ -302,20 +305,47 @@ impl NovarisApp {
     // ── Sketch and feature commands ──────────────────────────────
 
     fn selected_plane(&self) -> Option<Plane> {
+        self.selected_plane_base().and_then(|(b, _)| self.plane_of(b))
+    }
+
+    /// The selection as a plane to build on, with the reference plane
+    /// feature it comes from (if any)
+    fn selected_plane_base(&self) -> Option<(PlaneBase, Option<FeatureId>)> {
         match &self.selection {
-            Selection::Plane(p) => Some(p.plane()),
-            Selection::Face { plane, .. } => Some(*plane),
+            Selection::Plane(StdPlane::Front) => Some((PlaneBase::Front, None)),
+            Selection::Plane(StdPlane::Top) => Some((PlaneBase::Top, None)),
+            Selection::Plane(StdPlane::Right) => Some((PlaneBase::Right, None)),
+            Selection::Face { plane, .. } => Some((PlaneBase::Fixed(*plane), None)),
+            Selection::Feature(id) if matches!(self.doc.tree.get(*id).map(|f| &f.kind), Some(FeatureKind::RefPlane(_))) => {
+                Some((PlaneBase::Feature(*id), Some(*id)))
+            }
             _ => None,
         }
     }
 
+    fn plane_of(&self, base: PlaneBase) -> Option<Plane> {
+        match base {
+            PlaneBase::Front => Some(Plane::front()),
+            PlaneBase::Top => Some(Plane::top()),
+            PlaneBase::Right => Some(Plane::right()),
+            PlaneBase::Fixed(p) => Some(p),
+            PlaneBase::Feature(id) => self.doc.tree.feature_plane(id),
+        }
+    }
+
     fn start_new_sketch(&mut self) {
-        let Some(plane) = self.selected_plane() else {
+        let Some((base, support)) = self.selected_plane_base() else {
             self.error("Sélectionnez un plan (dans l'arbre) ou une face plane, puis cliquez Esquisse.");
             return;
         };
+        let Some(plane) = self.plane_of(base) else {
+            self.error("Ce plan a une erreur de reconstruction.");
+            return;
+        };
         self.camera.normal_to(&plane);
-        self.sketcher = Some(Sketcher::new(None, Sketch::on_plane("", plane)));
+        let mut sketch = Sketch::on_plane("", plane);
+        sketch.support = support;
+        self.sketcher = Some(Sketcher::new(None, sketch));
         self.saved_rollback = None;
         self.tab = Tab::Sketch;
         self.selection = Selection::None;
@@ -341,7 +371,8 @@ impl NovarisApp {
             self.doc.tree.set_rollback(r);
         }
         if keep {
-            let has_geometry = sk.sketch.elements.values().any(|e| !matches!(e, SketchElement::Point(_)));
+            // Lone points count: they position holes
+            let has_geometry = !sk.sketch.elements.is_empty();
             match sk.feature {
                 Some(id) => {
                     self.checkpoint();
@@ -399,12 +430,90 @@ impl NovarisApp {
         match self.doc.tree.add_extrude(Extrude { sketch, end, reverse, op }) {
             Ok(feature) => {
                 self.checkpoint_from(before.clone());
-                self.extrude_editor = Some(ExtrudeEditor { feature, before });
+                self.feature_editor = Some(FeatureEditor { feature, before });
                 self.selection = Selection::Feature(feature);
                 self.rebuild();
             }
             Err(e) => self.error(e.to_string()),
         }
+    }
+
+    /// Add a feature and open its PropertyManager
+    fn start_feature(&mut self, kind: FeatureKind) {
+        if self.sketcher.is_some() {
+            self.exit_sketch(true);
+        }
+        let before = self.doc.tree.clone();
+        match self.doc.tree.add_feature(kind) {
+            Ok(feature) => {
+                self.checkpoint_from(before.clone());
+                self.feature_editor = Some(FeatureEditor { feature, before });
+                self.selection = Selection::Feature(feature);
+                self.rebuild();
+            }
+            Err(e) => self.error(e.to_string()),
+        }
+    }
+
+    fn start_revolve(&mut self, op: ExtrudeOp) {
+        if self.sketcher.is_some() {
+            self.exit_sketch(true);
+        }
+        let Some(sketch) = self.sketch_for_extrude() else {
+            self.error("Sélectionnez une esquisse avec un profil fermé et un axe (ligne de construction).");
+            return;
+        };
+        self.start_feature(FeatureKind::Revolve(RevolveFeature { sketch, axis: None, angle_deg: 360.0, mid_plane: false, reverse: false, op }));
+    }
+
+    fn start_hole(&mut self) {
+        if self.sketcher.is_some() {
+            self.exit_sketch(true);
+        }
+        let Some(sketch) = self.sketch_for_extrude() else {
+            self.error("Esquissez des points (outil Point) sur une face, puis cliquez Perçage.");
+            return;
+        };
+        let end = if self.doc.tree.body().is_some() { EndCondition::ThroughAll } else { EndCondition::Blind { depth: 10.0 } };
+        let reverse = !self.sketch_points_into_body_at_points(sketch);
+        self.start_feature(FeatureKind::Hole(Hole { sketch, kind: HoleKind::Simple { diameter: 6.0 }, end, reverse }));
+    }
+
+    /// Features a pattern command repeats: the selected one, else the last
+    fn pattern_seed(&self) -> Option<FeatureId> {
+        let repeatable = |k: &FeatureKind| matches!(k, FeatureKind::Extrude(_) | FeatureKind::Revolve(_) | FeatureKind::Hole(_) | FeatureKind::Pattern(_));
+        if let Selection::Feature(id) = self.selection {
+            if self.doc.tree.get(id).is_some_and(|f| repeatable(&f.kind)) {
+                return Some(id);
+            }
+        }
+        self.doc.tree.features().iter().rev().find(|f| repeatable(&f.kind)).map(|f| f.id)
+    }
+
+    fn start_pattern(&mut self, kind: PatternKind) {
+        let Some(seed) = self.pattern_seed() else {
+            self.error("Sélectionnez la fonction à répéter dans l'arbre.");
+            return;
+        };
+        self.start_feature(FeatureKind::Pattern(Pattern { seeds: vec![seed], kind }));
+    }
+
+    fn start_ref_plane(&mut self) {
+        let base = self.selected_plane_base().map(|(b, _)| b).unwrap_or(PlaneBase::Front);
+        self.start_feature(FeatureKind::RefPlane(RefPlane { base, offset: 10.0 }));
+    }
+
+    /// Like `sketch_points_into_body`, for sketches made of lone points
+    fn sketch_points_into_body_at_points(&self, sketch: FeatureId) -> bool {
+        let (Some(FeatureKind::Sketch(s)), Some(mesh)) = (self.doc.tree.get(sketch).map(|f| &f.kind), self.mesh.as_ref())
+        else {
+            return true;
+        };
+        let Some(p) = s.free_points().into_iter().next() else { return true };
+        let c = s.plane.to_world(DVec2::new(p.x, p.y));
+        let n = s.plane.normal();
+        let eps = mesh.bounds().map(|(lo, hi)| (hi - lo).length() * 1e-4).unwrap_or(1e-3).max(1e-4);
+        point_in_mesh(mesh, c - n * eps) || !point_in_mesh(mesh, c + n * eps)
     }
 
     fn checkpoint_from(&mut self, before: FeatureTree) {
@@ -440,8 +549,8 @@ impl NovarisApp {
     fn edit_feature(&mut self, id: FeatureId) {
         match self.doc.tree.get(id).map(|f| &f.kind) {
             Some(FeatureKind::Sketch(_)) => self.edit_sketch(id),
-            Some(FeatureKind::Extrude(_)) => {
-                self.extrude_editor = Some(ExtrudeEditor { feature: id, before: self.doc.tree.clone() });
+            Some(_) => {
+                self.feature_editor = Some(FeatureEditor { feature: id, before: self.doc.tree.clone() });
                 self.selection = Selection::Feature(id);
             }
             None => {}
@@ -615,7 +724,29 @@ impl NovarisApp {
                 if big_button(ui, "Enlèvement de\nmatière extrudé").clicked() {
                     self.start_extrude(ExtrudeOp::Cut);
                 }
+                if big_button(ui, "Bossage avec\nrévolution").clicked() {
+                    self.start_revolve(ExtrudeOp::Boss);
+                }
+                if big_button(ui, "Enlèvement avec\nrévolution").clicked() {
+                    self.start_revolve(ExtrudeOp::Cut);
+                }
+                if big_button(ui, "Perçage").clicked() {
+                    self.start_hole();
+                }
                 ui.separator();
+                if big_button(ui, "Répétition\nlinéaire").clicked() {
+                    self.start_pattern(PatternKind::Linear { axis: Axis::X, spacing: 20.0, count: 3, reverse: false });
+                }
+                if big_button(ui, "Répétition\ncirculaire").clicked() {
+                    self.start_pattern(PatternKind::Circular { axis: Axis::Z, angle_deg: 360.0, count: 4 });
+                }
+                if big_button(ui, "Symétrie").clicked() {
+                    self.start_pattern(PatternKind::Mirror { plane: PlaneBase::Right });
+                }
+                ui.separator();
+                if big_button(ui, "Plan").clicked() {
+                    self.start_ref_plane();
+                }
                 if big_button(ui, "Esquisse").clicked() {
                     self.start_new_sketch();
                 }
@@ -634,7 +765,7 @@ impl NovarisApp {
                 }
                 ui.separator();
                 let sk = self.sketcher.as_mut().unwrap();
-                for tool in [Tool::Select, Tool::SmartDimension, Tool::Line, Tool::Rectangle, Tool::Circle, Tool::Arc] {
+                for tool in [Tool::Select, Tool::SmartDimension, Tool::Line, Tool::Rectangle, Tool::Circle, Tool::Arc, Tool::Centerline, Tool::Point] {
                     let selected = sk.tool == tool;
                     if ui
                         .add_sized([96.0, 40.0], egui::SelectableLabel::new(selected, tool.label()))
@@ -659,16 +790,16 @@ impl NovarisApp {
         ui.label("Origine");
         ui.separator();
 
-        let features: Vec<(FeatureId, String, bool, bool)> = self
+        let features: Vec<(FeatureId, String, bool, bool, &'static str)> = self
             .doc
             .tree
             .features()
             .iter()
-            .map(|f| (f.id, f.name.clone(), matches!(f.kind, FeatureKind::Sketch(_)), f.suppressed))
+            .map(|f| (f.id, f.name.clone(), matches!(f.kind, FeatureKind::Sketch(_)), f.suppressed, feature_icon(&f.kind)))
             .collect();
         let rollback = self.doc.tree.rollback();
         let mut action: Option<TreeAction> = None;
-        for (i, (id, name, is_sketch, suppressed)) in features.iter().enumerate() {
+        for (i, (id, name, is_sketch, suppressed, icon)) in features.iter().enumerate() {
             if rollback == Some(i) {
                 rollback_bar(ui);
             }
@@ -677,7 +808,6 @@ impl NovarisApp {
                 (Some(FeatureState::UnderDefined { .. }), _) => "(-) ",
                 _ => "",
             };
-            let icon = if *is_sketch { "✏" } else { "⬛" };
             let mut text = egui::RichText::new(format!("{icon} {prefix}{name}"));
             match &state {
                 Some(FeatureState::Error(_)) => text = text.color(CONFLICT),
@@ -763,68 +893,172 @@ impl NovarisApp {
         }
     }
 
-    fn extrude_property_manager(&mut self, ui: &mut egui::Ui) {
-        let Some(editor) = self.extrude_editor.as_ref() else { return };
+    fn feature_property_manager(&mut self, ui: &mut egui::Ui) {
+        let Some(editor) = self.feature_editor.as_ref() else { return };
         let id = editor.feature;
         let name = self.doc.tree.get(id).map(|f| f.name.clone()).unwrap_or_default();
         ui.heading(name);
         ui.horizontal(|ui| {
             if ui.button(egui::RichText::new("✔ Valider").color(Color32::from_rgb(0, 140, 0))).clicked() {
-                self.extrude_editor = None;
+                self.feature_editor = None;
                 return;
             }
             if ui.button(egui::RichText::new("✖ Annuler").color(CONFLICT)).clicked() {
-                if let Some(ed) = self.extrude_editor.take() {
+                if let Some(ed) = self.feature_editor.take() {
                     self.doc.tree = ed.before;
                     self.undo.pop();
                     self.rebuild();
                 }
             }
         });
-        if self.extrude_editor.is_none() {
+        if self.feature_editor.is_none() {
             return;
         }
         ui.separator();
-        let Some(mut e) = self.doc.tree.extrude_mut(id).cloned() else { return };
-        let original = e.clone();
-        ui.label("Opération");
-        ui.radio_value(&mut e.op, ExtrudeOp::Boss, "Bossage (ajouter)");
-        ui.radio_value(&mut e.op, ExtrudeOp::Cut, "Enlèvement de matière");
-        ui.add_space(6.0);
-        ui.label("Direction 1");
-        let mut kind = match e.end {
-            EndCondition::Blind { .. } => 0,
-            EndCondition::ThroughAll => 1,
-            EndCondition::MidPlane { .. } => 2,
-        };
-        let depth = match e.end {
-            EndCondition::Blind { depth } | EndCondition::MidPlane { depth } => depth,
-            EndCondition::ThroughAll => 10.0,
-        };
-        egui::ComboBox::from_id_source("end")
-            .selected_text(["Borgne", "À travers tout", "Plan milieu"][kind])
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut kind, 0, "Borgne");
-                ui.selectable_value(&mut kind, 1, "À travers tout");
-                ui.selectable_value(&mut kind, 2, "Plan milieu");
-            });
-        let mut d = depth;
-        if kind != 1 {
-            ui.horizontal(|ui| {
-                ui.label("Profondeur");
-                ui.add(egui::DragValue::new(&mut d).speed(0.5).range(0.01..=1e5).suffix(" mm"));
-            });
+        let Some(original) = self.doc.tree.get(id).map(|f| f.kind.clone()) else { return };
+        let mut kind = original.clone();
+        let candidates: Vec<(FeatureId, String)> = self
+            .doc
+            .tree
+            .features()
+            .iter()
+            .take_while(|f| f.id != id)
+            .map(|f| (f.id, f.name.clone()))
+            .collect();
+        let ref_planes: Vec<(FeatureId, String)> = self
+            .doc
+            .tree
+            .features()
+            .iter()
+            .take_while(|f| f.id != id)
+            .filter(|f| matches!(f.kind, FeatureKind::RefPlane(_)))
+            .map(|f| (f.id, f.name.clone()))
+            .collect();
+        match &mut kind {
+            FeatureKind::Extrude(e) => {
+                ui.label("Opération");
+                ui.radio_value(&mut e.op, ExtrudeOp::Boss, "Bossage (ajouter)");
+                ui.radio_value(&mut e.op, ExtrudeOp::Cut, "Enlèvement de matière");
+                ui.add_space(6.0);
+                ui.label("Direction 1");
+                end_condition_ui(ui, "end", &mut e.end, true);
+                ui.checkbox(&mut e.reverse, "Inverser la direction");
+            }
+            FeatureKind::Revolve(r) => {
+                ui.label("Opération");
+                ui.radio_value(&mut r.op, ExtrudeOp::Boss, "Bossage (ajouter)");
+                ui.radio_value(&mut r.op, ExtrudeOp::Cut, "Enlèvement de matière");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Angle");
+                    ui.add(egui::DragValue::new(&mut r.angle_deg).speed(1.0).range(0.1..=360.0).suffix(" °"));
+                });
+                ui.checkbox(&mut r.mid_plane, "Plan milieu");
+                ui.add_enabled(!r.mid_plane, egui::Checkbox::new(&mut r.reverse, "Inverser la direction"));
+                ui.weak("Axe : première ligne de construction de l'esquisse.");
+            }
+            FeatureKind::Hole(h) => {
+                ui.label("Type de perçage");
+                let mut cb = matches!(h.kind, HoleKind::Counterbore { .. });
+                let d = match h.kind {
+                    HoleKind::Simple { diameter } | HoleKind::Counterbore { diameter, .. } => diameter,
+                };
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut cb, false, "Simple");
+                    ui.radio_value(&mut cb, true, "Lamé");
+                });
+                let mut dia = d;
+                ui.horizontal(|ui| {
+                    ui.label("Diamètre");
+                    ui.add(egui::DragValue::new(&mut dia).speed(0.1).range(0.1..=1e4).suffix(" mm"));
+                });
+                h.kind = if cb {
+                    let (mut cbd, mut cbh) = match h.kind {
+                        HoleKind::Counterbore { cb_diameter, cb_depth, .. } => (cb_diameter, cb_depth),
+                        _ => (dia * 1.8, dia * 0.6),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label("Ø lamage");
+                        ui.add(egui::DragValue::new(&mut cbd).speed(0.1).range(dia + 0.01..=1e4).suffix(" mm"));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Prof. lamage");
+                        ui.add(egui::DragValue::new(&mut cbh).speed(0.1).range(0.01..=1e4).suffix(" mm"));
+                    });
+                    HoleKind::Counterbore { diameter: dia, cb_diameter: cbd.max(dia + 0.01), cb_depth: cbh }
+                } else {
+                    HoleKind::Simple { diameter: dia }
+                };
+                ui.add_space(6.0);
+                ui.label("Condition de fin");
+                end_condition_ui(ui, "hole_end", &mut h.end, false);
+                ui.checkbox(&mut h.reverse, "Inverser la direction");
+                ui.weak("Un perçage à chaque point isolé de l'esquisse.");
+            }
+            FeatureKind::RefPlane(p) => {
+                ui.label("Plan de base");
+                plane_base_ui(ui, "base", &mut p.base, &ref_planes);
+                ui.horizontal(|ui| {
+                    ui.label("Décalage");
+                    ui.add(egui::DragValue::new(&mut p.offset).speed(0.5).suffix(" mm"));
+                });
+            }
+            FeatureKind::Pattern(pat) => {
+                match &mut pat.kind {
+                    PatternKind::Linear { axis, spacing, count, reverse } => {
+                        axis_ui(ui, "lin_axis", axis);
+                        ui.checkbox(reverse, "Inverser la direction");
+                        ui.horizontal(|ui| {
+                            ui.label("Espacement");
+                            ui.add(egui::DragValue::new(spacing).speed(0.5).range(0.01..=1e5).suffix(" mm"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Occurrences");
+                            ui.add(egui::DragValue::new(count).range(2..=200));
+                        });
+                    }
+                    PatternKind::Circular { axis, angle_deg, count } => {
+                        axis_ui(ui, "circ_axis", axis);
+                        ui.horizontal(|ui| {
+                            ui.label("Angle total");
+                            ui.add(egui::DragValue::new(angle_deg).speed(1.0).range(0.1..=360.0).suffix(" °"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Occurrences");
+                            ui.add(egui::DragValue::new(count).range(2..=200));
+                        });
+                    }
+                    PatternKind::Mirror { plane } => {
+                        ui.label("Plan de symétrie");
+                        plane_base_ui(ui, "mirror", plane, &ref_planes);
+                    }
+                }
+                ui.add_space(6.0);
+                ui.label("Fonctions à répéter");
+                for (fid, fname) in &candidates {
+                    let repeatable = matches!(
+                        self.doc.tree.get(*fid).map(|f| &f.kind),
+                        Some(FeatureKind::Extrude(_) | FeatureKind::Revolve(_) | FeatureKind::Hole(_) | FeatureKind::Pattern(_))
+                    );
+                    if !repeatable {
+                        continue;
+                    }
+                    let mut on = pat.seeds.contains(fid);
+                    if ui.checkbox(&mut on, fname).changed() {
+                        if on {
+                            pat.seeds.push(*fid);
+                        } else if pat.seeds.len() > 1 {
+                            pat.seeds.retain(|s| s != fid);
+                        }
+                    }
+                }
+            }
+            FeatureKind::Sketch(_) => {}
         }
-        e.end = match kind {
-            0 => EndCondition::Blind { depth: d },
-            1 => EndCondition::ThroughAll,
-            _ => EndCondition::MidPlane { depth: d },
-        };
-        ui.checkbox(&mut e.reverse, "Inverser la direction");
 
-        if format!("{:?}", e) != format!("{:?}", original) {
-            if let Some(slot) = self.doc.tree.extrude_mut(id) {
-                *slot = e;
+        if format!("{:?}", kind) != format!("{:?}", original) {
+            if let Some(f) = self.doc.tree.get_mut(id) {
+                f.kind = kind;
             }
             self.dirty = true;
             self.rebuild();
@@ -1061,6 +1295,19 @@ impl NovarisApp {
     }
 
     fn draw_reference_planes(&self, painter: &egui::Painter, to_screen: &dyn Fn(DVec3) -> Pos2) {
+        // User planes are always shown, like SolidWorks' visible planes
+        for f in self.doc.tree.features() {
+            let (FeatureKind::RefPlane(_), Some(plane)) = (&f.kind, self.doc.tree.feature_plane(f.id)) else { continue };
+            let selected = self.selection == Selection::Feature(f.id);
+            let s = 40.0;
+            let corners: Vec<Pos2> = [(-s, -s), (s, -s), (s, s), (-s, s)]
+                .iter()
+                .map(|&(u, v)| to_screen(plane.to_world(DVec2::new(u, v))))
+                .collect();
+            let color = if selected { SELECTED } else { Color32::from_rgb(120, 90, 160) };
+            painter.add(egui::Shape::convex_polygon(corners.clone(), color.gamma_multiply(if selected { 0.18 } else { 0.05 }), Stroke::new(1.0_f32, color)));
+            painter.text(corners[3], egui::Align2::LEFT_BOTTOM, &f.name, egui::FontId::proportional(12.0), color);
+        }
         let show_all = self.doc.tree.body().is_none() && self.sketcher.is_none();
         for p in [StdPlane::Front, StdPlane::Top, StdPlane::Right] {
             let selected = self.selection == Selection::Plane(p);
@@ -1284,7 +1531,11 @@ impl NovarisApp {
             match e {
                 SketchElement::Line(l) => {
                     if let (Some(a), Some(b)) = (sk.point(l.p1), sk.point(l.p2)) {
-                        painter.line_segment([s2(a), s2(b)], stroke);
+                        if l.construction {
+                            painter.extend(egui::Shape::dashed_line(&[s2(a), s2(b)], Stroke::new(1.2_f32, color), 10.0, 4.0));
+                        } else {
+                            painter.line_segment([s2(a), s2(b)], stroke);
+                        }
                     }
                 }
                 SketchElement::Circle(c) => {
@@ -1446,6 +1697,82 @@ fn point_in_mesh(mesh: &RenderMesh, p: DVec3) -> bool {
         == 1
 }
 
+fn feature_icon(kind: &FeatureKind) -> &'static str {
+    match kind {
+        FeatureKind::Sketch(_) => "✏",
+        FeatureKind::Extrude(_) => "⬛",
+        FeatureKind::Revolve(_) => "◉",
+        FeatureKind::Hole(_) => "○",
+        FeatureKind::RefPlane(_) => "▭",
+        FeatureKind::Pattern(p) => match p.kind {
+            PatternKind::Mirror { .. } => "⇋",
+            _ => "⁂",
+        },
+    }
+}
+
+/// Blind / through all / mid plane selector with its depth
+fn end_condition_ui(ui: &mut egui::Ui, id: &str, end: &mut EndCondition, allow_mid: bool) {
+    let mut kind = match *end {
+        EndCondition::Blind { .. } => 0,
+        EndCondition::ThroughAll => 1,
+        EndCondition::MidPlane { .. } => 2,
+    };
+    let mut d = match *end {
+        EndCondition::Blind { depth } | EndCondition::MidPlane { depth } => depth,
+        EndCondition::ThroughAll => 10.0,
+    };
+    let labels = ["Borgne", "À travers tout", "Plan milieu"];
+    egui::ComboBox::from_id_source(id).selected_text(labels[kind]).show_ui(ui, |ui| {
+        for (k, l) in labels.iter().enumerate().take(if allow_mid { 3 } else { 2 }) {
+            ui.selectable_value(&mut kind, k, *l);
+        }
+    });
+    if kind != 1 {
+        ui.horizontal(|ui| {
+            ui.label("Profondeur");
+            ui.add(egui::DragValue::new(&mut d).speed(0.5).range(0.01..=1e5).suffix(" mm"));
+        });
+    }
+    *end = match kind {
+        0 => EndCondition::Blind { depth: d },
+        1 => EndCondition::ThroughAll,
+        _ => EndCondition::MidPlane { depth: d },
+    };
+}
+
+fn axis_ui(ui: &mut egui::Ui, id: &str, axis: &mut Axis) {
+    ui.horizontal(|ui| {
+        ui.label("Axe");
+        egui::ComboBox::from_id_source(id).selected_text(format!("{:?}", axis)).show_ui(ui, |ui| {
+            for a in [Axis::X, Axis::Y, Axis::Z] {
+                ui.selectable_value(axis, a, format!("{:?}", a));
+            }
+        });
+    });
+}
+
+fn plane_base_ui(ui: &mut egui::Ui, id: &str, base: &mut PlaneBase, ref_planes: &[(FeatureId, String)]) {
+    let label = |b: &PlaneBase| match b {
+        PlaneBase::Front => "Plan de face".to_string(),
+        PlaneBase::Top => "Plan de dessus".to_string(),
+        PlaneBase::Right => "Plan de droite".to_string(),
+        PlaneBase::Fixed(_) => "Face sélectionnée".to_string(),
+        PlaneBase::Feature(fid) => ref_planes.iter().find(|(i, _)| i == fid).map(|(_, n)| n.clone()).unwrap_or_else(|| "?".into()),
+    };
+    egui::ComboBox::from_id_source(id).selected_text(label(base)).show_ui(ui, |ui| {
+        let mut options = vec![PlaneBase::Front, PlaneBase::Top, PlaneBase::Right];
+        if matches!(base, PlaneBase::Fixed(_)) {
+            options.push(*base);
+        }
+        options.extend(ref_planes.iter().map(|(i, _)| PlaneBase::Feature(*i)));
+        for o in options {
+            let text = label(&o);
+            ui.selectable_value(base, o, text);
+        }
+    });
+}
+
 /// A FeatureManager command, applied after the tree has been drawn
 type TreeAction = Box<dyn FnOnce(&mut NovarisApp)>;
 
@@ -1487,8 +1814,8 @@ impl eframe::App for NovarisApp {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if in_sketch {
                     self.sketch_property_manager(ui);
-                } else if self.extrude_editor.is_some() {
-                    self.extrude_property_manager(ui);
+                } else if self.feature_editor.is_some() {
+                    self.feature_property_manager(ui);
                 } else {
                     self.feature_manager(ui);
                 }

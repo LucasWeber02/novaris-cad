@@ -29,6 +29,10 @@ pub struct SketchLine {
     pub id: Id,
     pub p1: Id,
     pub p2: Id,
+    /// Construction geometry (centerline): constrained like any line but
+    /// not part of profiles; used as revolve axis or mirror line
+    #[serde(default)]
+    pub construction: bool,
 }
 
 /// A circle

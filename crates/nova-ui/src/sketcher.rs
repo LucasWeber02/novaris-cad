@@ -20,6 +20,10 @@ pub enum Tool {
     Circle,
     /// Center point arc: center, start, end (counter-clockwise)
     Arc,
+    /// Construction line, e.g. a revolve axis
+    Centerline,
+    /// Lone point, e.g. a hole position
+    Point,
     SmartDimension,
 }
 
@@ -31,6 +35,8 @@ impl Tool {
             Tool::Rectangle => "Rectangle",
             Tool::Circle => "Cercle",
             Tool::Arc => "Arc centre",
+            Tool::Centerline => "Axe",
+            Tool::Point => "Point",
             Tool::SmartDimension => "Cotation intelligente",
         }
     }
@@ -187,7 +193,8 @@ impl Sketcher {
     /// Add a line, with SolidWorks-style automatic horizontal/vertical
     fn add_line(&mut self, a: Id, b: Id) {
         let (Some(pa), Some(pb)) = (self.point(a), self.point(b)) else { return };
-        let Ok(line) = self.sketch.add_line(a, b) else { return };
+        let added = if self.tool == Tool::Centerline { self.sketch.add_centerline(a, b) } else { self.sketch.add_line(a, b) };
+        let Ok(line) = added else { return };
         let d = pb - pa;
         let tol = AUTO_HV_DEGREES.to_radians().tan();
         if d.y.abs() <= tol * d.x.abs() {
@@ -215,6 +222,23 @@ impl Sketcher {
                     }
                 }
                 return None;
+            }
+            Tool::Point => {
+                if snap.is_none() {
+                    self.sketch.add_point(p.x, p.y);
+                }
+            }
+            Tool::Centerline => {
+                // A single segment per centerline
+                let id = self.point_at(p, snap);
+                match self.stage.first().copied() {
+                    None => self.stage.push(id),
+                    Some(first) if first != id => {
+                        self.add_line(first, id);
+                        self.cancel();
+                    }
+                    _ => {}
+                }
             }
             Tool::Line => {
                 let id = self.point_at(p, snap);
@@ -340,7 +364,7 @@ impl Sketcher {
     pub fn preview(&self, p: DVec2) -> Vec<Preview> {
         let pts: Vec<DVec2> = self.stage.iter().filter_map(|id| self.point(*id)).collect();
         match (self.tool, pts.as_slice()) {
-            (Tool::Line, [a]) => vec![Preview::Line(*a, p)],
+            (Tool::Line | Tool::Centerline, [a]) => vec![Preview::Line(*a, p)],
             (Tool::Rectangle, [a]) => {
                 let (b, d) = (DVec2::new(p.x, a.y), DVec2::new(a.x, p.y));
                 vec![Preview::Line(*a, b), Preview::Line(b, p), Preview::Line(p, d), Preview::Line(d, *a)]
@@ -635,6 +659,22 @@ mod tests {
         s.delete_selection();
         assert_eq!(lines(&s), 3);
         assert_eq!(s.sketch.constraints.len(), 3);
+    }
+
+    #[test]
+    fn centerline_and_point_tools() {
+        let mut s = session();
+        s.set_tool(Tool::Centerline);
+        s.click(DVec2::new(0.0, -5.0), None, None, false);
+        s.click(DVec2::new(0.0, 30.0), None, None, false);
+        assert_eq!(s.sketch.centerlines().len(), 1);
+        // vertical axis gets an automatic vertical relation
+        assert!(s.sketch.constraints.iter().any(|c| matches!(c.constraint_type, ConstraintType::Vertical { .. })));
+        s.set_tool(Tool::Point);
+        s.click(DVec2::new(4.0, 4.0), None, None, false);
+        assert_eq!(s.sketch.free_points().len(), 1);
+        // axes are not profiles
+        assert!(s.sketch.profiles().is_err());
     }
 
     #[test]

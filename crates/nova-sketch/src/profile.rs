@@ -61,6 +61,7 @@ pub fn extract_profiles(sketch: &Sketch) -> Result<Vec<Profile>> {
     let mut loops = Vec::new();
     for e in elements {
         match e {
+            SketchElement::Line(l) if l.construction => {}
             SketchElement::Line(l) => {
                 let (a, b) = (pos(&l.p1)?, pos(&l.p2)?);
                 edges.push(Edge { a: node_of(a), b: node_of(b), kind: EdgeKind::Line });
@@ -308,6 +309,22 @@ mod tests {
         s.add_rectangle(0.0, 0.0, 10.0, 10.0).unwrap();
         s.add_rectangle(5.0, 5.0, 10.0, 10.0).unwrap();
         assert!(s.profiles().unwrap_err().to_string().contains("intersect"));
+    }
+
+    #[test]
+    fn centerlines_are_not_part_of_profiles() {
+        let mut s = Sketch::new("Rev");
+        s.add_rectangle(5.0, 0.0, 10.0, 20.0).unwrap();
+        let a = s.add_point(0.0, -5.0);
+        let b = s.add_point(0.0, 25.0);
+        s.add_centerline(a, b).unwrap();
+        let p = s.profiles().unwrap();
+        assert_eq!(p.len(), 1);
+        assert!((p[0].area() - 200.0).abs() < 1e-9);
+        assert_eq!(s.centerlines().len(), 1);
+        assert!(s.free_points().is_empty());
+        s.add_point(1.0, 1.0);
+        assert_eq!(s.free_points().len(), 1);
     }
 
     #[test]

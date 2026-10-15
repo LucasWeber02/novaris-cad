@@ -224,12 +224,12 @@ impl RenderMesh {
 impl Solid {
     /// Build a solid prism
     pub fn prism(prism: &Prism) -> Result<Solid> {
-        build_prism(prism, 0.0, 0.0)
+        build_prism(prism, 0.0, 0.0, 0.0)
     }
 
     /// Build a tool's solid
     pub fn from_tool(tool: &Tool) -> Result<Solid> {
-        build_tool(tool, 0.0, 0.0, 0.0)
+        build_tool(tool, Perturb::NONE)
     }
 
     /// Combine this body with a prism tool.
@@ -259,14 +259,33 @@ impl Solid {
         // attempt would only fail slowly
         // Third value: seam rotation for full revolutions (no geometric change,
         // but keeps the tool's seam away from the body's seams)
-        let attempts: &[(f64, f64, f64)] = match (op, &tool.shape) {
+        let p = |start: f64, end: f64, grow: f64| Perturb { start: start * eps, end: end * eps, grow: grow * eps, seam: 0.37 };
+        // Extending only one end first keeps the other (often free) face exact
+        let attempts: Vec<Perturb> = match (op, &tool.shape) {
             // Revolved tools rarely succeed in Truck: fail fast
-            (_, ToolShape::Revolve(_)) => &[(0.0, 0.0, 0.0), (eps, eps, 0.37)],
-            (BooleanOp::Union, _) => &[(0.0, 0.0, 0.0), (eps, 0.0, 0.37), (eps, eps, 0.37), (10.0 * eps, 10.0 * eps, 1.1)],
-            (BooleanOp::Subtract, _) => &[(eps, 0.0, 0.37), (eps, eps, 0.37), (10.0 * eps, 10.0 * eps, 1.1), (0.0, 0.0, 0.0)],
+            (_, ToolShape::Revolve(_)) => vec![Perturb::NONE, p(0.0, 0.0, 1.0)],
+            (BooleanOp::Union, _) => vec![
+                Perturb::NONE,
+                p(1.0, 0.0, 0.0),
+                p(0.0, 1.0, 0.0),
+                p(1.0, 1.0, 0.0),
+                p(1.0, 0.0, 1.0),
+                p(1.0, 1.0, 1.0),
+                p(10.0, 10.0, 10.0),
+            ],
+            (BooleanOp::Subtract, _) => vec![
+                p(1.0, 1.0, 0.0),
+                p(0.0, 1.0, 0.0),
+                p(1.0, 0.0, 0.0),
+                p(1.0, 1.0, 1.0),
+                p(10.0, 10.0, 0.0),
+                p(37.0, 37.0, 0.0),
+                p(10.0, 10.0, 10.0),
+                Perturb::NONE,
+            ],
         };
-        for &(extend, grow, seam) in attempts {
-            let Ok(tool_solid) = build_tool(tool, extend, grow, seam) else { continue };
+        for perturb in attempts {
+            let Ok(tool_solid) = build_tool(tool, perturb) else { continue };
             let tool_volume = tool_solid.quick_volume();
             let base = self.inner.clone();
             let mut t = tool_solid.inner;
@@ -425,10 +444,26 @@ fn to_matrix(m: DMat4) -> Matrix4 {
 }
 
 /// Build a tool (see `build_prism` for `extend`/`grow`)
-fn build_tool(tool: &Tool, extend: f64, grow: f64, seam: f64) -> Result<Solid> {
+/// Tiny tool changes used to work around Truck's coplanar-face failures
+#[derive(Clone, Copy, Debug)]
+struct Perturb {
+    /// Extension before the start / after the end of a prism
+    start: f64,
+    end: f64,
+    /// Growth of the profile in its plane
+    grow: f64,
+    /// Seam rotation of full revolutions (radians, no geometric change)
+    seam: f64,
+}
+
+impl Perturb {
+    const NONE: Perturb = Perturb { start: 0.0, end: 0.0, grow: 0.0, seam: 0.0 };
+}
+
+fn build_tool(tool: &Tool, perturb: Perturb) -> Result<Solid> {
     let solid = match &tool.shape {
-        ToolShape::Prism(p) => build_prism(p, extend, grow)?,
-        ToolShape::Revolve(r) => build_revolve(r, grow, seam)?,
+        ToolShape::Prism(p) => build_prism(p, perturb.start, perturb.end, perturb.grow)?,
+        ToolShape::Revolve(r) => build_revolve(r, perturb.grow, perturb.seam)?,
     };
     if tool.transform == DMat4::IDENTITY {
         return Ok(solid);
@@ -503,9 +538,9 @@ fn to_point(p: DVec3) -> Point3 {
     Point3::new(p.x, p.y, p.z)
 }
 
-/// Build a prism, optionally extended by `extend` at both ends and grown by
-/// `grow` (absolute, in plane) around the profile centre.
-fn build_prism(prism: &Prism, extend: f64, grow: f64) -> Result<Solid> {
+/// Build a prism, optionally extended before its start / after its end and
+/// grown by `grow` (absolute, in plane) around the profile centre.
+fn build_prism(prism: &Prism, extend_start: f64, extend_end: f64, grow: f64) -> Result<Solid> {
     if prism.end - prism.start < 1e-9 {
         return Err(NovaError::InvalidFeature("extrusion depth must be positive".into()));
     }
@@ -520,7 +555,7 @@ fn build_prism(prism: &Prism, extend: f64, grow: f64) -> Result<Solid> {
     let half = ((hi - lo) / 2.0).max_element().max(1e-9);
     let factor = 1.0 + grow / half;
     let map = |p: DVec2| center + (p - center) * factor;
-    let start = prism.start - extend;
+    let start = prism.start - extend_start;
     let base_plane = prism.plane.offset(start);
     // Holes shrink when the outer boundary grows, keeping walls in place
     let hole_map = |p: DVec2| center + (p - center) / factor;
@@ -533,7 +568,7 @@ fn build_prism(prism: &Prism, extend: f64, grow: f64) -> Result<Solid> {
     let face = catch_unwind(AssertUnwindSafe(|| builder::try_attach_plane(&wires)))
         .map_err(|_| NovaError::GeometryError("profile is not a valid planar region".into()))?
         .map_err(|e| NovaError::GeometryError(format!("profile is not a valid planar region: {e}")))?;
-    let depth = prism.end - prism.start + 2.0 * extend;
+    let depth = prism.end - prism.start + extend_start + extend_end;
     let n = prism.plane.normal() * depth;
     let solid: TruckSolid = builder::tsweep(&face, Vector3::new(n.x, n.y, n.z));
     // The face orientation chosen by Truck may oppose the sweep direction

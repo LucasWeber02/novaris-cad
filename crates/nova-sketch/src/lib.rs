@@ -23,6 +23,9 @@ pub struct Sketch {
     pub elements: HashMap<Id, SketchElement>,
     pub constraints: Vec<Constraint>,
     pub is_fully_constrained: bool,
+    /// Reference plane feature this sketch lies on (its plane follows it)
+    #[serde(default)]
+    pub support: Option<Id>,
     /// Points and circles fully determined by the constraints (last solve)
     #[serde(skip)]
     pub defined: HashSet<Id>,
@@ -43,6 +46,7 @@ impl Sketch {
             elements: HashMap::new(),
             constraints: Vec::new(),
             is_fully_constrained: false,
+            support: None,
             defined: HashSet::new(),
         }
     }
@@ -69,8 +73,55 @@ impl Sketch {
             return Err(NovaError::InvalidSketch("a line needs two distinct points".into()));
         }
         let id = Id::new();
-        self.elements.insert(id, SketchElement::Line(SketchLine { id, p1: p1_id, p2: p2_id }));
+        self.elements.insert(id, SketchElement::Line(SketchLine { id, p1: p1_id, p2: p2_id, construction: false }));
         Ok(id)
+    }
+
+    /// Add a construction line (centerline)
+    pub fn add_centerline(&mut self, p1_id: Id, p2_id: Id) -> Result<Id> {
+        let id = self.add_line(p1_id, p2_id)?;
+        if let Some(SketchElement::Line(l)) = self.elements.get_mut(&id) {
+            l.construction = true;
+        }
+        Ok(id)
+    }
+
+    /// Construction lines, in a stable order
+    pub fn centerlines(&self) -> Vec<SketchLine> {
+        let mut v: Vec<SketchLine> = self
+            .elements
+            .values()
+            .filter_map(|e| match e {
+                SketchElement::Line(l) if l.construction => Some(*l),
+                _ => None,
+            })
+            .collect();
+        v.sort_by_key(|l| l.id.uuid());
+        v
+    }
+
+    /// Points not used by any line, arc or circle (e.g. hole positions)
+    pub fn free_points(&self) -> Vec<SketchPoint> {
+        let used: HashSet<Id> = self
+            .elements
+            .values()
+            .flat_map(|e| match e {
+                SketchElement::Line(l) => vec![l.p1, l.p2],
+                SketchElement::Circle(c) => vec![c.center],
+                SketchElement::Arc(a) => vec![a.center, a.start, a.end],
+                SketchElement::Point(_) => vec![],
+            })
+            .collect();
+        let mut v: Vec<SketchPoint> = self
+            .elements
+            .values()
+            .filter_map(|e| match e {
+                SketchElement::Point(p) if !used.contains(&p.id) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        v.sort_by_key(|p| p.id.uuid());
+        v
     }
 
     /// Add a circle
