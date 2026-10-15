@@ -1,0 +1,14 @@
+[package]
+name = "nova-occt"
+description = "Minimal, exception-safe bindings to the OpenCascade (OCCT 7.8) kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+cxx = "1.0"
+
+[build-dependencies]
+cxx-build = "1.0"
+occt-sys = "7.8.1"
