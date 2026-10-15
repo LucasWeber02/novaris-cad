@@ -696,7 +696,7 @@ impl FeatureTree {
                         HoleKind::Counterbore { diameter, cb_diameter, cb_depth } => (diameter, Some((cb_diameter, cb_depth))),
                     };
                     let circle = |dia: f64| Profile::simple(Loop::circle(c, dia / 2.0));
-                    // Counterbore first: Truck fails the other way round
+                    // Counterbore first, then the hole through its bottom
                     if let Some((cbd, cbh)) = cb {
                         let (s0, s1) = if into { (-cbh, 0.0) } else { (0.0, cbh) };
                         tools.push(Prism::new(circle(cbd), sketch.plane, s0, s1).into());
@@ -999,7 +999,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Truck kernel: this cross hole fails depending on tiny extent changes (see nova-kernel debug_cases)"]
     fn revolved_shaft_with_cross_hole() {
         let mut tree = FeatureTree::new();
         let mut s = Sketch::new("");

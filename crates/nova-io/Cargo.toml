@@ -15,4 +15,3 @@ glam = { workspace = true }
 
 [dev-dependencies]
 nova-sketch = { path = "../nova-sketch" }
-truck-stepio = "0.3"

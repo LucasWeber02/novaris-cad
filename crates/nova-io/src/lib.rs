@@ -91,10 +91,7 @@ impl PartDocument {
 
 /// Write a solid as a STEP AP203 file
 pub fn export_step(solid: &Solid, path: impl AsRef<Path>) -> Result<()> {
-    let path = path.as_ref();
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("part.step");
-    std::fs::write(path, solid.to_step(name))?;
-    Ok(())
+    solid.write_step(path.as_ref())
 }
 
 /// Binary STL bytes; `tol` is the chord tolerance in mm
@@ -181,15 +178,16 @@ mod tests {
     }
 
     #[test]
-    fn step_file_reparses() {
+    fn step_file_is_a_closed_solid() {
         let doc = plate();
         let dir = std::env::temp_dir().join(format!("nvcad-step-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("plaque.step");
         export_step(doc.tree.body().unwrap(), &path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        let table = truck_stepio::r#in::Table::from_step(&text).expect("valid STEP");
-        assert_eq!(table.shell.len(), 1);
+        assert!(text.starts_with("ISO-10303-21;"));
+        assert_eq!(text.matches("MANIFOLD_SOLID_BREP").count(), 1);
+        assert!(text.contains("CYLINDRICAL_SURFACE"), "the hole stays an exact cylinder");
         std::fs::remove_dir_all(dir).ok();
     }
 }

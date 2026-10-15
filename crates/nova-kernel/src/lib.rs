@@ -1,7 +1,7 @@
 //! NOVARIS CAD — Geometry Kernel Layer
 //!
-//! Pure Rust geometry kernel implementation.
-//! Handles B-Rep solids, extrusion, and tessellation.
+//! Exact B-Rep solids on OpenCascade (see `solid`); sketch planes and
+//! profiles in pure Rust. `BRep` is the old polygon mesh used by prototypes.
 
 pub mod extrusion;
 pub mod brep;
@@ -13,7 +13,7 @@ pub use extrusion::extrude_profile;
 pub use brep::BRep;
 pub use plane::Plane;
 pub use profile::{ArcGeom, Loop, Profile, Segment};
-pub use solid::{mirror, rotation_about, translation, BooleanOp, Prism, RenderMesh, Revolve, Solid, Tool, ToolShape};
+pub use solid::{mirror, rotation_about, translation, BooleanOp, EdgeInfo, Prism, RenderMesh, Revolve, Solid, Tool, ToolShape};
 
 use nova_core::Result;
 use nova_geometry::Mesh;
