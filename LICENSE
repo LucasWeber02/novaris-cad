@@ -1,0 +1,11 @@
+NOVARIS CAD is licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later).
+
+See https://www.gnu.org/licenses/agpl-3.0.html for the full license text.
+
+In summary:
+- You may use, modify, and distribute this software freely
+- If you distribute modified versions, you must release the source code
+- If you use this software as a service (SaaS), users must be able to access your modified source
+- This ensures the software remains free and open for the community
+
+Dependencies are licensed under their respective terms. See Cargo.toml for details.

@@ -1,0 +1,14 @@
+[package]
+name = "nova-sheet-metal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nova-core = { path = "../nova-core" }
+nova-math = { path = "../nova-math" }
+nova-geometry = { path = "../nova-geometry" }
+nova-features = { path = "../nova-features" }
+
+[lib]
+name = "nova_sheet_metal"
+path = "src/lib.rs"

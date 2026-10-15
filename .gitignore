@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+*.o
+*.a
+*.so
+*.dylib
+.env.local
+
+# Testing
+tarpaulin-report.html
+cobertura.xml
+
+# Build artifacts
+*.nvcad
+*.bak

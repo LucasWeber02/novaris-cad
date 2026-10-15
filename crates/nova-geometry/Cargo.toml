@@ -1,0 +1,13 @@
+[package]
+name = "nova-geometry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+nova-core = { path = "../nova-core" }
+nova-math = { path = "../nova-math" }
+nalgebra = { workspace = true }
+glam = { workspace = true }
+serde = { workspace = true }

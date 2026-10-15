@@ -1,0 +1,29 @@
+[package]
+name = "novaris-desktop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "novaris"
+path = "src/main.rs"
+
+[dependencies]
+nova-core = { path = "../../crates/nova-core" }
+nova-math = { path = "../../crates/nova-math" }
+nova-geometry = { path = "../../crates/nova-geometry" }
+nova-ui = { path = "../../crates/nova-ui" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+winit = { workspace = true }
+wgpu = { workspace = true }
+
+thiserror = { workspace = true }

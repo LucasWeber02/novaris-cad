@@ -1,0 +1,55 @@
+[workspace]
+members = [
+    "crates/nova-core",
+    "crates/nova-math",
+    "crates/nova-geometry",
+    "crates/nova-kernel",
+    "crates/nova-sketch",
+    "crates/nova-parametric",
+    "crates/nova-features",
+    "crates/nova-ui",
+    "crates/nova-io",
+    "apps/desktop",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Novaris Industries <dev@novaris.local>"]
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+# Core
+tokio = { version = "1.40", features = ["full"] }
+rayon = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Math & Geometry
+nalgebra = { version = "0.33", features = ["serde-serialize"] }
+glam = { version = "0.28", features = ["serde"] }
+approx = "0.5"
+
+# UI/Graphics
+egui = "0.28"
+egui-wgpu = "0.28"
+winit = "0.30"
+wgpu = "0.20"
+bytemuck = "1.15"
+
+# Storage
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls"] }
+sqlx-sqlite = "0.8"
+
+# CLI & Utility
+clap = { version = "4.5", features = ["derive"] }
+thiserror = "1.0"
+log = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16

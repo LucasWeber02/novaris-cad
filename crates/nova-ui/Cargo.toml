@@ -1,0 +1,26 @@
+[package]
+name = "nova-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+nova-core = { path = "../nova-core" }
+nova-kernel = { path = "../nova-kernel" }
+nova-geometry = { path = "../nova-geometry" }
+nova-features = { path = "../nova-features" }
+nova-sketch = { path = "../nova-sketch" }
+
+# UI Framework
+egui = "0.28"
+eframe = "0.28"
+wgpu = "0.20"
+
+# Math
+glam = { workspace = true }
+nalgebra = { workspace = true }
+
+# Utilities
+serde = { workspace = true }
+tracing = { workspace = true }

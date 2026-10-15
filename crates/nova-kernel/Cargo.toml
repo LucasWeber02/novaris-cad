@@ -1,0 +1,22 @@
+[package]
+name = "nova-kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+nova-core = { path = "../nova-core" }
+nova-geometry = { path = "../nova-geometry" }
+nova-math = { path = "../nova-math" }
+
+serde = { workspace = true }
+glam = { workspace = true }
+nalgebra = { workspace = true }
+
+# Geometry kernel — Truck (pure Rust)
+# Note: Truck API is complex; starting simple, will expand
+truck-base = "0.3"
+
+[dev-dependencies]
+approx = { workspace = true }

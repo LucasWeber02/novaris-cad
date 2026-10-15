@@ -1,0 +1,12 @@
+[package]
+name = "nova-shaders"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nova-core = { path = "../nova-core" }
+nova-math = { path = "../nova-math" }
+
+[lib]
+name = "nova_shaders"
+path = "src/lib.rs"

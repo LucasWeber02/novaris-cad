@@ -1,0 +1,11 @@
+[package]
+name = "nova-commands"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nova-core = { path = "../nova-core" }
+
+[lib]
+name = "nova_commands"
+path = "src/lib.rs"
