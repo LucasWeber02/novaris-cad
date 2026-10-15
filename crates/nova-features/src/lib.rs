@@ -148,6 +148,21 @@ impl Pattern {
     }
 }
 
+/// An edge of the body, named by its midpoint. On rebuild it resolves to
+/// the closest edge of the current body, so it survives most edits.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EdgeRef {
+    pub midpoint: DVec3,
+}
+
+/// Fillet or chamfer of body edges
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EdgeFeature {
+    pub edges: Vec<EdgeRef>,
+    /// Fillet radius or chamfer distance
+    pub size: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum FeatureKind {
     Sketch(Sketch),
@@ -156,6 +171,8 @@ pub enum FeatureKind {
     RefPlane(RefPlane),
     Hole(Hole),
     Pattern(Pattern),
+    Fillet(EdgeFeature),
+    Chamfer(EdgeFeature),
 }
 
 impl FeatureKind {
@@ -178,8 +195,38 @@ impl FeatureKind {
                 }
                 v
             }
+            FeatureKind::Fillet(_) | FeatureKind::Chamfer(_) => Vec::new(),
         }
     }
+}
+
+/// Indices of the body edges referred to by `refs`
+pub fn resolve_edges(body: &Solid, refs: &[EdgeRef]) -> Result<Vec<u32>> {
+    let edges = body.edges();
+    let tolerance = (body.size() * 0.05).max(0.5);
+    let mut out = Vec::with_capacity(refs.len());
+    for r in refs {
+        let best = edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| (e.end - e.start).length() > 1e-9 || (e.mid - e.start).length() > 1e-9)
+            .map(|(i, e)| (i, (e.mid - r.midpoint).length()))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        match best {
+            Some((i, d)) if d <= tolerance => {
+                if !out.contains(&(i as u32)) {
+                    out.push(i as u32);
+                }
+            }
+            _ => {
+                return Err(NovaError::InvalidFeature(format!(
+                    "an edge near ({:.1}, {:.1}, {:.1}) no longer exists",
+                    r.midpoint.x, r.midpoint.y, r.midpoint.z
+                )))
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -433,6 +480,19 @@ impl FeatureTree {
                     PatternKind::Mirror { .. } => "Symétrie",
                 }
             }
+            FeatureKind::Fillet(e) | FeatureKind::Chamfer(e) => {
+                if e.edges.is_empty() {
+                    return Err(NovaError::InvalidFeature("select at least one edge".into()));
+                }
+                if !(e.size > 0.0 && e.size.is_finite()) {
+                    return Err(NovaError::InvalidFeature("size must be a positive number".into()));
+                }
+                if matches!(kind, FeatureKind::Fillet(_)) {
+                    "Congé"
+                } else {
+                    "Chanfrein"
+                }
+            }
         };
         let name = self.next_name(name);
         Ok(self.insert(Feature { id: Id::new(), name, suppressed: false, kind }))
@@ -595,6 +655,26 @@ impl FeatureTree {
                     }
                     Err(e) => FeatureState::Error(e.to_string()),
                 },
+                FeatureKind::Fillet(e) | FeatureKind::Chamfer(e) => {
+                    let result = body
+                        .as_ref()
+                        .ok_or_else(|| NovaError::InvalidFeature("there is no body to round".into()))
+                        .and_then(|b| {
+                            let edges = resolve_edges(b, &e.edges)?;
+                            if matches!(kind, FeatureKind::Fillet(_)) {
+                                b.fillet(&edges, e.size)
+                            } else {
+                                b.chamfer(&edges, e.size)
+                            }
+                        });
+                    match result {
+                        Ok(solid) => {
+                            body = Some(solid);
+                            FeatureState::Ok
+                        }
+                        Err(e) => FeatureState::Error(e.to_string()),
+                    }
+                }
                 _ => match self.material(&kind, &states, body.as_ref(), &ctx).and_then(|(op, tools)| {
                     let solid = apply_tools(body.as_ref(), op, &tools)?;
                     Ok((solid, op, tools))
@@ -724,7 +804,9 @@ impl FeatureTree {
                 }
                 Ok((op.unwrap_or(ExtrudeOp::Boss), tools))
             }
-            FeatureKind::Sketch(_) | FeatureKind::RefPlane(_) => Ok((ExtrudeOp::Boss, Vec::new())),
+            FeatureKind::Sketch(_) | FeatureKind::RefPlane(_) | FeatureKind::Fillet(_) | FeatureKind::Chamfer(_) => {
+                Ok((ExtrudeOp::Boss, Vec::new()))
+            }
         }
     }
 
@@ -1181,6 +1263,60 @@ mod tests {
         ok_states(&tree);
         assert!(close(volume(&tree), 136_000.0, 1e-4), "{}", volume(&tree));
         assert!(tree.remove(boss).is_err());
+    }
+
+    #[test]
+    fn fillet_and_chamfer_follow_edits() {
+        let (mut tree, _, ex) = plate_tree();
+        let fillet = tree
+            .add_feature(FeatureKind::Fillet(EdgeFeature { edges: vec![EdgeRef { midpoint: DVec3::new(100.0, 60.0, 10.0) }], size: 5.0 }))
+            .unwrap();
+        assert_eq!(tree.get(fillet).unwrap().name, "Congé1");
+        let chamfer = tree
+            .add_feature(FeatureKind::Chamfer(EdgeFeature { edges: vec![EdgeRef { midpoint: DVec3::new(0.0, 0.0, 10.0) }], size: 3.0 }))
+            .unwrap();
+        assert_eq!(tree.get(chamfer).unwrap().name, "Chanfrein1");
+        tree.rebuild();
+        ok_states(&tree);
+        let expected = |h: f64| 100.0 * 60.0 * h - (25.0 - PI * 25.0 / 4.0) * h - 4.5 * h;
+        assert!(close(volume(&tree), expected(20.0), 1e-9), "{}", volume(&tree));
+
+        // Thicker plate: the edges moved (midpoints at z = 15) but still resolve
+        tree.set_extrude_depth(ex, 30.0).unwrap();
+        tree.rebuild();
+        ok_states(&tree);
+        assert!(close(volume(&tree), expected(30.0), 1e-9), "{}", volume(&tree));
+
+        // Too large a radius is a rebuild error on that feature only
+        if let FeatureKind::Fillet(e) = &mut tree.get_mut(fillet).unwrap().kind {
+            e.size = 500.0;
+        }
+        tree.rebuild();
+        assert!(tree.state(fillet).unwrap().is_error());
+        assert_eq!(tree.state(chamfer), Some(&FeatureState::Ok));
+    }
+
+    #[test]
+    fn revolved_groove_cut_feature() {
+        let mut tree = FeatureTree::new();
+        let shaft_sketch = |x0: f64, y0: f64, w: f64, h: f64| {
+            let mut s = Sketch::new("");
+            s.add_rectangle(x0, y0, w, h).unwrap();
+            let a = s.add_point(0.0, -10.0);
+            let b = s.add_point(0.0, 50.0);
+            s.add_centerline(a, b).unwrap();
+            s
+        };
+        let sk = tree.add_sketch(shaft_sketch(0.0, 0.0, 10.0, 40.0));
+        let rev = |sketch, op| FeatureKind::Revolve(RevolveFeature { sketch, axis: None, angle_deg: 360.0, mid_plane: false, reverse: false, op });
+        tree.add_feature(rev(sk, ExtrudeOp::Boss)).unwrap();
+        let gs = tree.add_sketch(shaft_sketch(8.0, 18.0, 4.0, 4.0));
+        let g = tree.add_feature(rev(gs, ExtrudeOp::Cut)).unwrap();
+        assert_eq!(tree.get(g).unwrap().name, "Enlèvement-Révolution1");
+        tree.rebuild();
+        ok_states(&tree);
+        let expected = PI * 100.0 * 40.0 - PI * 36.0 * 4.0;
+        assert!(close(volume(&tree), expected, 1e-9), "{}", volume(&tree));
     }
 
     #[test]

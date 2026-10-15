@@ -9,8 +9,8 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use glam::{DVec2, DVec3};
 use nova_core::Id;
 use nova_features::{
-    Axis, EndCondition, Extrude, ExtrudeOp, FeatureId, FeatureKind, FeatureState, FeatureTree, Hole, HoleKind, Pattern,
-    PatternKind, PlaneBase, RefPlane, RevolveFeature,
+    Axis, EdgeFeature, EdgeRef, EndCondition, Extrude, ExtrudeOp, FeatureId, FeatureKind, FeatureState, FeatureTree, Hole,
+    HoleKind, Pattern, PatternKind, PlaneBase, RefPlane, RevolveFeature,
 };
 use nova_io::PartDocument;
 use nova_kernel::{Plane, RenderMesh};
@@ -62,6 +62,8 @@ enum Selection {
     None,
     Plane(StdPlane),
     Face { face: u32, plane: Plane },
+    /// Model edges (indices into the body's edges), for fillets and chamfers
+    Edges(Vec<u32>),
     Feature(FeatureId),
 }
 
@@ -110,6 +112,7 @@ pub struct NovarisApp {
     tab: Tab,
     selection: Selection,
     hover_face: Option<u32>,
+    hover_edge: Option<u32>,
     sketcher: Option<Sketcher>,
     /// Rollback position to restore after editing a sketch
     saved_rollback: Option<Option<usize>>,
@@ -145,6 +148,7 @@ impl NovarisApp {
             tab: Tab::Features,
             selection: Selection::None,
             hover_face: None,
+            hover_edge: None,
             sketcher: None,
             saved_rollback: None,
             feature_editor: None,
@@ -168,7 +172,7 @@ impl NovarisApp {
     fn rebuild(&mut self) {
         self.doc.tree.rebuild();
         self.mesh = self.doc.tree.body().map(|b| b.tessellate((b.size() * 1e-3).max(0.01)));
-        self.volume = self.mesh.as_ref().map(|m| m.volume());
+        self.volume = self.doc.tree.body().map(|b| b.volume());
         self.mesh_dirty = true;
     }
 
@@ -744,6 +748,13 @@ impl NovarisApp {
                     self.start_pattern(PatternKind::Mirror { plane: PlaneBase::Right });
                 }
                 ui.separator();
+                if big_button(ui, "Congé").clicked() {
+                    self.start_edge_feature(true);
+                }
+                if big_button(ui, "Chanfrein").clicked() {
+                    self.start_edge_feature(false);
+                }
+                ui.separator();
                 if big_button(ui, "Plan").clicked() {
                     self.start_ref_plane();
                 }
@@ -1053,6 +1064,31 @@ impl NovarisApp {
                     }
                 }
             }
+            FeatureKind::Fillet(e) | FeatureKind::Chamfer(e) => {
+                let is_fillet = matches!(original, FeatureKind::Fillet(_));
+                ui.horizontal(|ui| {
+                    ui.label(if is_fillet { "Rayon" } else { "Distance" });
+                    ui.add(egui::DragValue::new(&mut e.size).speed(0.1).range(0.01..=1e4).suffix(" mm"));
+                });
+                ui.label(format!("{} arête(s)", e.edges.len()));
+                if let (Selection::Edges(sel), Some(body)) = (&self.selection, self.doc.tree.body()) {
+                    if ui.button("Ajouter les arêtes sélectionnées").clicked() {
+                        let infos = body.edges();
+                        for &i in sel {
+                            if let Some(info) = infos.get(i as usize) {
+                                let r = EdgeRef { midpoint: info.mid };
+                                if !e.edges.contains(&r) {
+                                    e.edges.push(r);
+                                }
+                            }
+                        }
+                    }
+                }
+                if e.edges.len() > 1 && ui.button("Retirer la dernière arête").clicked() {
+                    e.edges.pop();
+                }
+                ui.weak("Maj+clic dans la vue pour sélectionner des arêtes.");
+            }
             FeatureKind::Sketch(_) => {}
         }
 
@@ -1290,7 +1326,9 @@ impl NovarisApp {
         if self.sketcher.is_some() {
             self.sketch_interaction(ui, &response, &painter, rect, aspect, &to_screen, &to_ndc);
         } else {
-            self.part_interaction(&response, aspect, &to_ndc);
+            let shift = ui.input(|i| i.modifiers.shift || i.modifiers.ctrl);
+            self.part_interaction(&response, aspect, &to_ndc, &to_screen, shift);
+            self.draw_edge_selection(&painter, &to_screen);
         }
     }
 
@@ -1378,10 +1416,82 @@ impl NovarisApp {
         Some((face, Some(Plane::new(origin, x_axis, n))))
     }
 
-    fn part_interaction(&mut self, response: &egui::Response, aspect: f64, to_ndc: &dyn Fn(Pos2) -> DVec2) {
+    /// Model edge under the cursor (screen distance to its polyline)
+    fn pick_edge(&self, at: Pos2, to_screen: &dyn Fn(DVec3) -> Pos2) -> Option<u32> {
+        let mesh = self.mesh.as_ref()?;
+        let mut best: Option<(f32, u32)> = None;
+        for (i, poly) in mesh.edges.iter().enumerate() {
+            let pts: Vec<Pos2> = poly.iter().map(|p| to_screen(DVec3::from(p.map(f64::from)))).collect();
+            for w in pts.windows(2) {
+                let d = dist_to_segment(at, w[0], w[1]);
+                if d < PICK_PX && best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, i as u32));
+                }
+            }
+        }
+        best.map(|(_, i)| i)
+    }
+
+    fn draw_edge_selection(&self, painter: &egui::Painter, to_screen: &dyn Fn(DVec3) -> Pos2) {
+        let Some(mesh) = self.mesh.as_ref() else { return };
+        let draw = |i: u32, color: Color32| {
+            if let Some(poly) = mesh.edges.get(i as usize) {
+                let pts: Vec<Pos2> = poly.iter().map(|p| to_screen(DVec3::from(p.map(f64::from)))).collect();
+                painter.add(egui::Shape::line(pts, Stroke::new(3.0_f32, color)));
+            }
+        };
+        if let Selection::Edges(edges) = &self.selection {
+            for &e in edges {
+                draw(e, SELECTED);
+            }
+        }
+        if let Some(e) = self.hover_edge {
+            draw(e, PREVIEW);
+        }
+    }
+
+    /// Fillet (true) or chamfer of the selected edges
+    fn start_edge_feature(&mut self, fillet: bool) {
+        let (Selection::Edges(edges), Some(body)) = (&self.selection, self.doc.tree.body()) else {
+            self.error("Sélectionnez des arêtes dans la vue (Maj+clic pour en ajouter), puis cliquez Congé ou Chanfrein.");
+            return;
+        };
+        let infos = body.edges();
+        let refs: Vec<EdgeRef> = edges.iter().filter_map(|&i| infos.get(i as usize)).map(|e| EdgeRef { midpoint: e.mid }).collect();
+        let size = (body.size() * 0.02).clamp(0.5, 5.0).round().max(1.0);
+        let feature = EdgeFeature { edges: refs, size };
+        self.start_feature(if fillet { FeatureKind::Fillet(feature) } else { FeatureKind::Chamfer(feature) });
+    }
+
+    fn part_interaction(
+        &mut self,
+        response: &egui::Response,
+        aspect: f64,
+        to_ndc: &dyn Fn(Pos2) -> DVec2,
+        to_screen: &dyn Fn(DVec3) -> Pos2,
+        additive: bool,
+    ) {
         self.cursor_sketch = None;
-        self.hover_face = response.hover_pos().and_then(|p| self.pick_face(to_ndc(p), aspect)).map(|(f, _)| f);
+        self.hover_edge = response.hover_pos().and_then(|p| self.pick_edge(p, to_screen));
+        self.hover_face = if self.hover_edge.is_some() {
+            None
+        } else {
+            response.hover_pos().and_then(|p| self.pick_face(to_ndc(p), aspect)).map(|(f, _)| f)
+        };
         if response.clicked_by(egui::PointerButton::Primary) {
+            if let Some(edge) = response.interact_pointer_pos().and_then(|p| self.pick_edge(p, to_screen)) {
+                let mut edges = match (&self.selection, additive) {
+                    (Selection::Edges(e), true) => e.clone(),
+                    _ => Vec::new(),
+                };
+                if let Some(i) = edges.iter().position(|&e| e == edge) {
+                    edges.remove(i);
+                } else {
+                    edges.push(edge);
+                }
+                self.selection = if edges.is_empty() { Selection::None } else { Selection::Edges(edges) };
+                return;
+            }
             if let Some(p) = response.interact_pointer_pos() {
                 self.selection = match self.pick_face(to_ndc(p), aspect) {
                     Some((face, Some(plane))) => Selection::Face { face, plane },
@@ -1698,16 +1808,20 @@ fn point_in_mesh(mesh: &RenderMesh, p: DVec3) -> bool {
 }
 
 fn feature_icon(kind: &FeatureKind) -> &'static str {
+    // Only glyphs present in egui's bundled fonts
     match kind {
         FeatureKind::Sketch(_) => "✏",
         FeatureKind::Extrude(_) => "⬛",
-        FeatureKind::Revolve(_) => "◉",
+        FeatureKind::Revolve(_) => "🔁",
         FeatureKind::Hole(_) => "○",
-        FeatureKind::RefPlane(_) => "▭",
+        FeatureKind::RefPlane(_) => "■",
         FeatureKind::Pattern(p) => match p.kind {
-            PatternKind::Mirror { .. } => "⇋",
-            _ => "⁂",
+            PatternKind::Linear { .. } => "📏",
+            PatternKind::Circular { .. } => "⚙",
+            PatternKind::Mirror { .. } => "◑",
         },
+        FeatureKind::Fillet(_) => "⭕",
+        FeatureKind::Chamfer(_) => "✂",
     }
 }
 

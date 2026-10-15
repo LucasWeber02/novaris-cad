@@ -356,7 +356,7 @@ fn profile_face(profile: &Profile, plane: &Plane) -> Result<Shape> {
 }
 
 fn build_prism(prism: &Prism) -> Result<Solid> {
-    if !(prism.end - prism.start > 1e-9) {
+    if prism.end - prism.start <= 1e-9 || prism.end.is_nan() || prism.start.is_nan() {
         return Err(NovaError::InvalidFeature("extrusion depth must be positive".into()));
     }
     let face = profile_face(&prism.profile, &prism.plane.offset(prism.start))?;
