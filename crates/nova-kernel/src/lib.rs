@@ -13,7 +13,7 @@ pub use extrusion::extrude_profile;
 pub use brep::BRep;
 pub use plane::Plane;
 pub use profile::{ArcGeom, Loop, Profile, Segment};
-pub use solid::{BooleanOp, Prism, RenderMesh, Solid};
+pub use solid::{mirror, rotation_about, translation, BooleanOp, Prism, RenderMesh, Revolve, Solid, Tool, ToolShape};
 
 use nova_core::Result;
 use nova_geometry::Mesh;
