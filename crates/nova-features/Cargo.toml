@@ -7,9 +7,11 @@ license.workspace = true
 
 [dependencies]
 nova-core = { path = "../nova-core" }
-nova-geometry = { path = "../nova-geometry" }
 nova-kernel = { path = "../nova-kernel" }
 nova-sketch = { path = "../nova-sketch" }
 
 serde = { workspace = true }
-uuid = { version = "1.10", features = ["v4", "serde"] }
+glam = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
