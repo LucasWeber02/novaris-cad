@@ -12,7 +12,7 @@ pub use nova_kernel::Plane;
 
 use nova_core::{Id, NovaError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A 2D sketch containing geometry and constraints, drawn on a plane
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -23,6 +23,9 @@ pub struct Sketch {
     pub elements: HashMap<Id, SketchElement>,
     pub constraints: Vec<Constraint>,
     pub is_fully_constrained: bool,
+    /// Points and circles fully determined by the constraints (last solve)
+    #[serde(skip)]
+    pub defined: HashSet<Id>,
 }
 
 impl Sketch {
@@ -40,6 +43,7 @@ impl Sketch {
             elements: HashMap::new(),
             constraints: Vec::new(),
             is_fully_constrained: false,
+            defined: HashSet::new(),
         }
     }
 
@@ -147,8 +151,21 @@ impl Sketch {
         let mut solver = SketchSolver::new(self);
         let report = solver.solve()?;
         let fully = solver.is_fully_constrained();
+        let defined = solver.defined().clone();
         self.is_fully_constrained = fully;
+        self.defined = defined;
         Ok(report)
+    }
+
+    /// Whether an element is fully defined (after `solve`): SolidWorks
+    /// draws defined geometry in black, under-defined in blue
+    pub fn is_defined(&self, id: Id) -> bool {
+        match self.elements.get(&id) {
+            Some(SketchElement::Point(_)) | Some(SketchElement::Circle(_)) => self.defined.contains(&id),
+            Some(SketchElement::Line(l)) => self.defined.contains(&l.p1) && self.defined.contains(&l.p2),
+            Some(SketchElement::Arc(a)) => [a.center, a.start, a.end].iter().all(|p| self.defined.contains(p)),
+            None => false,
+        }
     }
 
     /// Remaining degrees of freedom at the current geometry

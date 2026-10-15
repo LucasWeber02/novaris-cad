@@ -13,7 +13,7 @@
 use crate::{ConstraintType, Sketch, SketchElement};
 use nalgebra::{DMatrix, DVector};
 use nova_core::{Id, NovaError, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Residual magnitude under which a constraint counts as satisfied
 const TOLERANCE: f64 = 1e-9;
@@ -61,6 +61,7 @@ pub struct SketchSolver<'a> {
     /// Arcs, whose end points must stay at equal distance from the center
     arcs: Vec<(Id, Id, Id)>,
     report: Option<SolveReport>,
+    defined: HashSet<Id>,
 }
 
 impl<'a> SketchSolver<'a> {
@@ -102,6 +103,7 @@ impl<'a> SketchSolver<'a> {
             circle_index,
             arcs,
             report: None,
+            defined: HashSet::new(),
         }
     }
 
@@ -119,8 +121,56 @@ impl<'a> SketchSolver<'a> {
         }
 
         let report = self.analyze(&x, iterations, residual)?;
+        self.defined = self.defined_elements(&x)?;
         self.report = Some(report);
         Ok(report)
+    }
+
+    /// Points and circles whose position/size is fully determined (after `solve`)
+    pub fn defined(&self) -> &HashSet<Id> {
+        &self.defined
+    }
+
+    /// A variable is determined when no motion allowed by the constraints
+    /// (null space of the Jacobian) changes it.
+    fn defined_elements(&self, x: &DVector<f64>) -> Result<HashSet<Id>> {
+        let n = self.vars.len();
+        let mut free = vec![true; n];
+        if n > 0 && !self.sketch.constraints.is_empty() {
+            let j = self.jacobian(x)?;
+            // Pad to a square matrix so the SVD returns the full V (null space)
+            let mut padded = DMatrix::zeros(j.nrows().max(n), n);
+            padded.view_mut((0, 0), (j.nrows(), n)).copy_from(&j);
+            let svd = padded.svd(false, true);
+            let v_t = svd.v_t.expect("V requested");
+            let max = svd.singular_values.iter().cloned().fold(0.0, f64::max);
+            let mut weight = vec![0.0; n];
+            for (k, &sigma) in svd.singular_values.iter().enumerate() {
+                if sigma <= max * RANK_TOLERANCE {
+                    let v = v_t.row(k);
+                    for i in 0..n {
+                        weight[i] += v[i] * v[i];
+                    }
+                }
+            }
+            for i in 0..n {
+                free[i] = weight[i] > 1e-8;
+            }
+        }
+        let mut defined = HashSet::new();
+        for (&id, &i) in &self.point_index {
+            if !free[i] && !free[i + 1] {
+                defined.insert(id);
+            }
+        }
+        for (&id, &i) in &self.circle_index {
+            if let Some(SketchElement::Circle(c)) = self.sketch.elements.get(&id) {
+                if !free[i] && defined.contains(&c.center) {
+                    defined.insert(id);
+                }
+            }
+        }
+        Ok(defined)
     }
 
     /// Check if sketch is fully constrained (after `solve`)
@@ -668,6 +718,37 @@ mod tests {
         let pp = get(p);
         let cross = (pb.x - pa.x) * (pp.y - pa.y) - (pb.y - pa.y) * (pp.x - pa.x);
         assert!(cross.abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_defined_points() {
+        let mut sketch = Sketch::new("Def");
+        let a = sketch.add_point(0.0, 0.0);
+        let b = sketch.add_point(10.0, 1.0);
+        let l = sketch.add_line(a, b).unwrap();
+        sketch.add_constraint(Constraint::fixed(a, 0.0, 0.0));
+        sketch.add_constraint(Constraint::horizontal(l));
+        let mut solver = SketchSolver::new(&mut sketch);
+        solver.solve().unwrap();
+        assert!(solver.defined().contains(&a));
+        assert!(!solver.defined().contains(&b)); // can still slide along X
+
+        // A rectangle with only H/V relations: every corner is free
+        let mut rect = Sketch::new("R");
+        let pts = rect.add_rectangle(3.0, 4.0, 90.0, 50.0).unwrap();
+        let lines: Vec<Id> = rect.elements.values().filter_map(|e| match e {
+            SketchElement::Line(l) => Some(l.id),
+            _ => None,
+        }).collect();
+        for l in lines {
+            let (p1, p2) = match rect.elements.get(&l) {
+                Some(SketchElement::Line(line)) => (rect.get_point(line.p1).unwrap(), rect.get_point(line.p2).unwrap()),
+                _ => unreachable!(),
+            };
+            rect.add_constraint(if (p1.y - p2.y).abs() < 1e-9 { Constraint::horizontal(l) } else { Constraint::vertical(l) });
+        }
+        rect.solve().unwrap();
+        assert!(pts.iter().all(|p| !rect.is_defined(*p)));
     }
 
     #[test]

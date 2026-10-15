@@ -50,6 +50,13 @@ impl PartDocument {
 
     /// Parse .nvcad JSON text and rebuild the part
     pub fn from_json(text: &str) -> Result<Self> {
+        let mut part = Self::from_json_unbuilt(text)?;
+        part.tree.rebuild();
+        Ok(part)
+    }
+
+    /// Parse .nvcad JSON text without rebuilding the geometry yet
+    pub fn from_json_unbuilt(text: &str) -> Result<Self> {
         let header: serde_json::Value =
             serde_json::from_str(text).map_err(|e| NovaError::DocumentError(format!("not a valid part file: {e}")))?;
         if header.get("format").and_then(|f| f.as_str()) != Some(FORMAT) {
@@ -63,9 +70,7 @@ impl PartDocument {
         }
         let file: PartFile =
             serde_json::from_value(header).map_err(|e| NovaError::DocumentError(format!("corrupt part file: {e}")))?;
-        let mut part = file.part;
-        part.tree.rebuild();
-        Ok(part)
+        Ok(file.part)
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
@@ -73,8 +78,14 @@ impl PartDocument {
         Ok(())
     }
 
+    /// Read and rebuild a part file
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::from_json(&std::fs::read_to_string(path)?)
+    }
+
+    /// Read a part file; call `tree.rebuild()` before using its geometry
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_json_unbuilt(&std::fs::read_to_string(path)?)
     }
 }
 

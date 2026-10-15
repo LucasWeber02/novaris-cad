@@ -90,8 +90,13 @@ impl Solid {
         // Must exceed Truck's internal geometric tolerance to break coplanarity
         let eps = (size * 1e-6).max(1e-3);
         let base_volume = self.quick_volume();
-        let attempts = [(0.0, 0.0), (eps, 0.0), (eps, eps), (10.0 * eps, 10.0 * eps)];
-        for (extend, grow) in attempts {
+        // Cuts start on a face of the body almost every time, so the exact
+        // attempt would only fail slowly
+        let attempts: &[(f64, f64)] = match op {
+            BooleanOp::Union => &[(0.0, 0.0), (eps, 0.0), (eps, eps), (10.0 * eps, 10.0 * eps)],
+            BooleanOp::Subtract => &[(eps, 0.0), (eps, eps), (10.0 * eps, 10.0 * eps), (0.0, 0.0)],
+        };
+        for &(extend, grow) in attempts {
             let Ok(tool_solid) = build_prism(tool, extend, grow) else { continue };
             let tool_volume = tool_solid.quick_volume();
             let base = self.inner.clone();

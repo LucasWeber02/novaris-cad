@@ -8,19 +8,10 @@ license.workspace = true
 [dependencies]
 nova-core = { path = "../nova-core" }
 nova-kernel = { path = "../nova-kernel" }
-nova-geometry = { path = "../nova-geometry" }
 nova-features = { path = "../nova-features" }
 nova-sketch = { path = "../nova-sketch" }
+nova-io = { path = "../nova-io" }
 
-# UI Framework
-egui = "0.28"
-eframe = "0.28"
-wgpu = "0.20"
-
-# Math
+eframe = { version = "0.28", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+bytemuck = { workspace = true, features = ["derive"] }
 glam = { workspace = true }
-nalgebra = { workspace = true }
-
-# Utilities
-serde = { workspace = true }
-tracing = { workspace = true }

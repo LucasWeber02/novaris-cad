@@ -85,6 +85,25 @@ pub struct FeatureTree {
     body: Option<Solid>,
     #[serde(skip)]
     states: Vec<FeatureState>,
+    /// Result after each feature, keyed by a hash of the history up to it
+    #[serde(skip)]
+    cache: Vec<CacheEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct CacheEntry {
+    key: u64,
+    body: Option<Solid>,
+    state: FeatureState,
+}
+
+fn hash_feature(previous: u64, feature: &Feature) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    previous.hash(&mut h);
+    // Serialisation covers every parameter that affects the result
+    serde_json::to_string(feature).unwrap_or_default().hash(&mut h);
+    h.finish()
 }
 
 impl FeatureTree {
@@ -255,11 +274,14 @@ impl FeatureTree {
         self.states.get(self.index_of(id)?)
     }
 
-    /// Replay every feature up to the rollback bar
+    /// Replay every feature up to the rollback bar. Features whose history
+    /// is unchanged since the last rebuild reuse their cached result.
     pub fn rebuild(&mut self) -> Option<&Solid> {
         let mut body: Option<Solid> = None;
         let mut states = Vec::with_capacity(self.features.len());
         let active = self.rollback.unwrap_or(self.features.len());
+        let mut key = 0u64;
+        let mut cache = Vec::with_capacity(self.features.len());
 
         for i in 0..self.features.len() {
             if i >= active {
@@ -268,17 +290,32 @@ impl FeatureTree {
             }
             if self.features[i].suppressed {
                 states.push(FeatureState::Suppressed);
+                key = hash_feature(key, &self.features[i]);
+                cache.push(CacheEntry { key, body: body.clone(), state: FeatureState::Suppressed });
                 continue;
             }
-            let state = match &mut self.features[i].kind {
-                FeatureKind::Sketch(sketch) => match sketch.solve() {
+            // Sketches are solved first so their key reflects solved geometry
+            let sketch_state = if let FeatureKind::Sketch(sketch) = &mut self.features[i].kind {
+                Some(match sketch.solve() {
                     Err(e) => FeatureState::Error(e.to_string()),
                     Ok(r) => match r.status {
                         SolveStatus::Inconsistent => FeatureState::Error("sketch relations conflict".into()),
                         SolveStatus::UnderConstrained { dof } => FeatureState::UnderDefined { dof },
                         _ => FeatureState::Ok,
                     },
-                },
+                })
+            } else {
+                None
+            };
+            key = hash_feature(key, &self.features[i]);
+            if let Some(hit) = self.cache.get(i).filter(|c| c.key == key) {
+                body = hit.body.clone();
+                states.push(hit.state.clone());
+                cache.push(hit.clone());
+                continue;
+            }
+            let state = match &mut self.features[i].kind {
+                FeatureKind::Sketch(_) => sketch_state.expect("solved above"),
                 FeatureKind::Extrude(extrude) => {
                     let extrude = extrude.clone();
                     match self.evaluate_extrude(&extrude, &states, body.as_ref()) {
@@ -290,11 +327,13 @@ impl FeatureTree {
                     }
                 }
             };
+            cache.push(CacheEntry { key, body: body.clone(), state: state.clone() });
             states.push(state);
         }
 
         self.body = body;
         self.states = states;
+        self.cache = cache;
         self.body.as_ref()
     }
 
@@ -532,6 +571,32 @@ mod tests {
             .unwrap();
         tree.rebuild();
         assert!(matches!(tree.state(ex), Some(FeatureState::Error(m)) if m.contains("open contour")));
+    }
+
+    #[test]
+    fn incremental_rebuild_reuses_unchanged_features() {
+        let (mut tree, _, ex) = plate_tree();
+        let mut hole = Sketch::new("");
+        let c = hole.add_point(50.0, 30.0);
+        hole.add_circle(c, 5.0).unwrap();
+        let hs = tree.add_sketch(hole);
+        let cut = tree
+            .add_extrude(Extrude { sketch: hs, end: EndCondition::ThroughAll, reverse: false, op: ExtrudeOp::Cut })
+            .unwrap();
+        tree.rebuild();
+        let full = volume(&tree);
+
+        // Nothing changed: the second rebuild is served from the cache
+        let t = std::time::Instant::now();
+        tree.rebuild();
+        assert!(t.elapsed().as_millis() < 50, "{:?}", t.elapsed());
+        assert!((volume(&tree) - full).abs() < 1e-9);
+
+        // Changing the first extrusion invalidates everything after it
+        tree.set_extrude_depth(ex, 30.0).unwrap();
+        tree.rebuild();
+        assert!(close(volume(&tree), 180_000.0 - PI * 25.0 * 30.0, 1e-4), "{}", volume(&tree));
+        assert_eq!(tree.state(cut), Some(&FeatureState::Ok));
     }
 
     #[test]
