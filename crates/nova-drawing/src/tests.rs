@@ -83,8 +83,15 @@ fn standard_views_follow_the_projection_convention() {
     assert!(c3("Vue de dessus").y > c3("Vue de face").y, "third angle: top view above");
     assert!(c3("Vue de droite").x > c3("Vue de face").x);
 
-    // Projected views keep their alignment when moved
+    // Switching the convention keeps each view's content and flips its side
     let mut d = d;
+    let mut flipped = d.clone();
+    flipped.set_projection(Projection::ThirdAngle);
+    let t = view_named(&flipped, "Vue de dessus");
+    assert!(flipped.view_center(t).unwrap().y > flipped.view_center(view_named(&flipped, "Vue de face")).unwrap().y);
+    assert_eq!(flipped.frame(t).unwrap(), Orientation::Top.frame());
+
+    // Projected views keep their alignment when moved
     let top_id = view_named(&d, "Vue de dessus");
     d.move_view(top_id, DVec2::new(30.0, -5.0));
     assert!((d.view_center(top_id).unwrap().x - front.x).abs() < 1e-9);

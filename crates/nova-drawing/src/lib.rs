@@ -668,6 +668,26 @@ impl DrawingDocument {
         }
     }
 
+    /// Switch between first and third angle; projected views change side so
+    /// they keep showing the same face of the model
+    pub fn set_projection(&mut self, p: Projection) {
+        if self.sheet.projection == p {
+            return;
+        }
+        self.sheet.projection = p;
+        for v in &mut self.views {
+            if let ViewKind::Projected { side, .. } = &mut v.kind {
+                *side = match side {
+                    Side::Left => Side::Right,
+                    Side::Right => Side::Left,
+                    Side::Up => Side::Down,
+                    Side::Down => Side::Up,
+                };
+            }
+        }
+        self.refresh();
+    }
+
     /// Replace the views by front, top and side views (as the projection
     /// convention places them) plus an isometric view, at a standard scale
     /// that fits the sheet
@@ -952,8 +972,24 @@ fn dist_to_segment(p: DVec2, a: DVec2, b: DVec2) -> f64 {
 }
 
 fn project_view(model: &Model, frame: Frame, hidden: bool) -> Option<ViewGeom> {
-    let edges = model.solid.project(frame.normal, frame.x, hidden).ok()?;
+    let mut edges = model.solid.project(frame.normal, frame.x, hidden).ok()?;
     let tol = model.size * 1e-7 + 1e-7;
+    // A hidden line lying on a visible one (stacked parts) adds nothing
+    let on_visible = |p: DVec2, edges: &[ProjectedEdge]| {
+        edges
+            .iter()
+            .filter(|e| e.visible && e.curve == ProjCurve::Line)
+            .any(|e| dist_to_segment(p, e.a, e.b) <= tol * 100.0)
+    };
+    let covered: Vec<bool> = edges
+        .iter()
+        .map(|e| !e.visible && e.curve == ProjCurve::Line && on_visible(e.a, &edges) && on_visible(e.b, &edges) && on_visible((e.a + e.b) / 2.0, &edges))
+        .collect();
+    let mut k = 0;
+    edges.retain(|_| {
+        k += 1;
+        !covered[k - 1]
+    });
 
     // Circles: arcs grouped by center and radius
     let mut circles: Vec<(Circle2, f64)> = Vec::new();

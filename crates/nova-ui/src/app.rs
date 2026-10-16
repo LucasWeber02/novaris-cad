@@ -3,6 +3,7 @@
 //! PropertyManager when editing, graphics area in the middle.
 
 mod assembly;
+mod drawing;
 
 use crate::camera::{Camera, StandardView};
 use crate::render::{FrameParams, Viewport};
@@ -26,6 +27,14 @@ const DEFINED: Color32 = Color32::from_rgb(10, 10, 10);
 const CONFLICT: Color32 = Color32::from_rgb(220, 20, 20);
 const SELECTED: Color32 = Color32::from_rgb(0, 160, 255);
 const PREVIEW: Color32 = Color32::from_rgb(230, 120, 0);
+
+/// The document shown in the window
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Active {
+    Part,
+    Assembly,
+    Drawing,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
@@ -83,6 +92,8 @@ enum FileAction {
     ExportStep,
     ExportStl,
     InsertComponent,
+    ExportPdf,
+    ExportDxf,
 }
 
 struct FileDialog {
@@ -132,8 +143,10 @@ pub struct NovarisApp {
     startup_frames: u8,
     /// Open assembly (kept while one of its parts is edited)
     assembly: Option<assembly::AssemblyView>,
-    /// Showing the assembly rather than the part
-    in_assembly: bool,
+    /// Open drawing (kept while its model is edited)
+    drawing: Option<drawing::DrawingState>,
+    /// Which document the window shows
+    active: Active,
 }
 
 impl NovarisApp {
@@ -169,7 +182,8 @@ impl NovarisApp {
             cursor_sketch: None,
             startup_frames: 2,
             assembly: None,
-            in_assembly: false,
+            drawing: None,
+            active: Active::Part,
         };
         if app.doc.tree.is_empty() {
             app.startup_frames = 0;
@@ -232,7 +246,7 @@ impl NovarisApp {
     }
 
     fn new_document(&mut self) {
-        self.in_assembly = false;
+        self.active = Active::Part;
         self.doc = PartDocument::new("Pièce1");
         self.path = None;
         self.dirty = false;
@@ -247,8 +261,12 @@ impl NovarisApp {
     }
 
     fn save(&mut self) {
-        if self.in_assembly {
+        if self.active == Active::Assembly {
             self.asm_save();
+            return;
+        }
+        if self.active == Active::Drawing {
+            self.drw_save();
             return;
         }
         match self.path.clone() {
@@ -265,16 +283,20 @@ impl NovarisApp {
 
     fn open_file_dialog(&mut self, action: FileAction) {
         let dir = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."));
-        let (current, name) = match self.asm() {
-            Some(a) => (a.path.clone(), a.doc.name.clone()),
-            None => (self.path.clone(), self.doc.name.clone()),
+        let (current, name) = match (self.asm(), self.drw()) {
+            (Some(a), _) => (a.path.clone(), a.doc.name.clone()),
+            (_, Some(d)) => (d.path.clone().or_else(|| Some(d.doc.source_file().with_extension("nvdrw"))), d.doc.name.clone()),
+            _ => (self.path.clone(), self.doc.name.clone()),
         };
         let stem = current.as_ref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or(&name).to_string();
         let ext = match action {
-            FileAction::Open | FileAction::SaveAs | FileAction::InsertComponent if self.in_assembly => {
+            FileAction::Open | FileAction::SaveAs | FileAction::InsertComponent if self.active == Active::Assembly => {
                 if action == FileAction::SaveAs { "nvasm" } else { "nvcad" }
             }
+            FileAction::SaveAs if self.active == Active::Drawing => "nvdrw",
             FileAction::Open | FileAction::SaveAs | FileAction::InsertComponent => "nvcad",
+            FileAction::ExportPdf => "pdf",
+            FileAction::ExportDxf => "dxf",
             FileAction::ExportStep => "step",
             FileAction::ExportStl => "stl",
         };
@@ -291,12 +313,21 @@ impl NovarisApp {
     fn run_file_action(&mut self, action: FileAction, path: PathBuf) {
         let body = self.doc.tree.body().cloned();
         let is_asm_file = path.extension().is_some_and(|e| e == nova_assembly::EXTENSION);
+        let is_drawing_file = path.extension().is_some_and(|e| e == nova_drawing::EXTENSION);
+        let drawing = self.active == Active::Drawing;
         let result = match action {
             FileAction::Open if is_asm_file => self.open_assembly(&path),
+            FileAction::Open if is_drawing_file => self.open_drawing(&path),
+            FileAction::SaveAs if drawing => self.drw_save_as(&path),
+            FileAction::ExportPdf => self.drw_export(&path, true),
+            FileAction::ExportDxf => self.drw_export(&path, false),
+            FileAction::ExportStep | FileAction::ExportStl if drawing => {
+                Err("une mise en plan s'exporte en PDF ou en DXF".into())
+            }
             FileAction::InsertComponent => self.asm_insert(&path),
-            FileAction::SaveAs if self.in_assembly => self.asm_save_as(&path),
-            FileAction::ExportStep if self.in_assembly => self.asm_export_step(&path),
-            FileAction::ExportStl if self.in_assembly => Err("l'export STL d'un assemblage n'est pas encore disponible".into()),
+            FileAction::SaveAs if self.active == Active::Assembly => self.asm_save_as(&path),
+            FileAction::ExportStep if self.active == Active::Assembly => self.asm_export_step(&path),
+            FileAction::ExportStl if self.active == Active::Assembly => Err("l'export STL d'un assemblage n'est pas encore disponible".into()),
             FileAction::Open => match PartDocument::load(&path) {
                 Ok(doc) => {
                     self.new_document();
@@ -622,15 +653,35 @@ impl NovarisApp {
         // Modifiers are taken from each key event, not the end-of-frame state
         let key = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
         let cmd = Modifiers::COMMAND;
+        if self.active == Active::Drawing {
+            if key(cmd | Modifiers::SHIFT, Key::Z) || key(cmd, Key::Y) {
+                self.drw_undo(true);
+            } else if key(cmd, Key::Z) {
+                self.drw_undo(false);
+            } else if key(cmd, Key::S) {
+                self.save();
+            } else if key(cmd, Key::O) {
+                self.open_file_dialog(FileAction::Open);
+            } else if key(cmd, Key::N) {
+                self.new_document();
+            } else if key(Modifiers::NONE, Key::F) {
+                self.drw_fit();
+            } else if key(Modifiers::NONE, Key::Escape) {
+                self.drw_escape();
+            } else if key(Modifiers::NONE, Key::Delete) {
+                self.drw_delete_selection();
+            }
+            return;
+        }
         if key(cmd | Modifiers::SHIFT, Key::Z) || key(cmd, Key::Y) {
-            if let Some(a) = self.assembly.as_mut().filter(|_| self.in_assembly) {
+            if let Some(a) = self.assembly.as_mut().filter(|_| self.active == Active::Assembly) {
                 a.redo();
                 self.mesh_dirty = true;
             } else if self.sketcher.is_none() {
                 self.redo();
             }
         } else if key(cmd, Key::Z) {
-            if let Some(a) = self.assembly.as_mut().filter(|_| self.in_assembly) {
+            if let Some(a) = self.assembly.as_mut().filter(|_| self.active == Active::Assembly) {
                 a.undo();
                 self.mesh_dirty = true;
             } else if self.sketcher.is_none() {
@@ -656,9 +707,9 @@ impl NovarisApp {
             }
         } else if key(Modifiers::NONE, Key::F) {
             self.fit_pending = true;
-        } else if self.in_assembly && key(Modifiers::NONE, Key::Escape) {
+        } else if self.active == Active::Assembly && key(Modifiers::NONE, Key::Escape) {
             self.asm_escape();
-        } else if self.in_assembly && key(Modifiers::NONE, Key::Delete) {
+        } else if self.active == Active::Assembly && key(Modifiers::NONE, Key::Delete) {
             self.asm_delete_selection();
         } else if key(Modifiers::NONE, Key::Escape) {
             if let Some(s) = self.sketcher.as_mut() {
@@ -705,22 +756,41 @@ impl NovarisApp {
                     self.open_file_dialog(FileAction::SaveAs);
                     ui.close_menu();
                 }
-                if self.in_assembly && ui.button("Insérer des composants…").clicked() {
+                if self.active == Active::Assembly && ui.button("Insérer des composants…").clicked() {
                     self.open_file_dialog(FileAction::InsertComponent);
                     ui.close_menu();
                 }
-                if self.assembly.is_some() && !self.in_assembly && ui.button("Retour à l'assemblage").clicked() {
+                if self.assembly.is_some() && self.active == Active::Part && ui.button("Retour à l'assemblage").clicked() {
                     self.back_to_assembly();
                     ui.close_menu();
                 }
-                ui.separator();
-                if ui.button("Exporter STEP…").clicked() {
-                    self.open_file_dialog(FileAction::ExportStep);
+                if self.active != Active::Drawing && ui.button("Créer une mise en plan").clicked() {
+                    self.new_drawing_from_model();
                     ui.close_menu();
                 }
-                if ui.button("Exporter STL…").clicked() {
-                    self.open_file_dialog(FileAction::ExportStl);
+                if self.drawing.is_some() && self.active != Active::Drawing && ui.button("Retour à la mise en plan").clicked() {
+                    self.back_to_drawing();
                     ui.close_menu();
+                }
+                ui.separator();
+                if self.active == Active::Drawing {
+                    if ui.button("Exporter PDF…").clicked() {
+                        self.open_file_dialog(FileAction::ExportPdf);
+                        ui.close_menu();
+                    }
+                    if ui.button("Exporter DXF…").clicked() {
+                        self.open_file_dialog(FileAction::ExportDxf);
+                        ui.close_menu();
+                    }
+                } else {
+                    if ui.button("Exporter STEP…").clicked() {
+                        self.open_file_dialog(FileAction::ExportStep);
+                        ui.close_menu();
+                    }
+                    if ui.button("Exporter STL…").clicked() {
+                        self.open_file_dialog(FileAction::ExportStl);
+                        ui.close_menu();
+                    }
                 }
                 ui.separator();
                 if ui.button("Quitter").clicked() {
@@ -728,7 +798,19 @@ impl NovarisApp {
                 }
             });
             ui.menu_button("Édition", |ui| {
-                if let Some(a) = self.assembly.as_mut().filter(|_| self.in_assembly) {
+                if self.active == Active::Drawing {
+                    let (u, r) = self.drw_can_undo();
+                    if ui.add_enabled(u, egui::Button::new("Annuler   Ctrl+Z")).clicked() {
+                        self.drw_undo(false);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(r, egui::Button::new("Rétablir   Ctrl+Y")).clicked() {
+                        self.drw_undo(true);
+                        ui.close_menu();
+                    }
+                    return;
+                }
+                if let Some(a) = self.assembly.as_mut().filter(|_| self.active == Active::Assembly) {
                     if ui.add_enabled(a.can_undo(), egui::Button::new("Annuler   Ctrl+Z")).clicked() {
                         a.undo();
                         self.mesh_dirty = true;
@@ -769,9 +851,10 @@ impl NovarisApp {
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (name, dirty) = match self.asm() {
-                    Some(a) => (a.doc.name.clone(), a.dirty),
-                    None => (self.doc.name.clone(), self.dirty),
+                let (name, dirty) = match (self.asm(), self.drw()) {
+                    (Some(a), _) => (a.doc.name.clone(), a.dirty),
+                    (_, Some(d)) => (d.doc.name.clone(), d.dirty),
+                    _ => (self.doc.name.clone(), self.dirty),
                 };
                 let title = format!("{name}{} — NOVARIS CAD", if dirty { " *" } else { "" });
                 ui.label(egui::RichText::new(title).strong());
@@ -857,6 +940,10 @@ impl NovarisApp {
     fn feature_manager(&mut self, ui: &mut egui::Ui) {
         if self.assembly.is_some() && ui.button("↩ Enregistrer et revenir à l'assemblage").clicked() {
             self.back_to_assembly();
+            return;
+        }
+        if self.drawing.is_some() && ui.button("↩ Enregistrer et revenir à la mise en plan").clicked() {
+            self.back_to_drawing();
             return;
         }
         ui.label(egui::RichText::new(&self.doc.name).strong());
@@ -1262,8 +1349,10 @@ impl NovarisApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label("MMGS");
                 ui.separator();
-                if self.in_assembly {
+                if self.active == Active::Assembly {
                     self.asm_status(ui);
+                } else if self.active == Active::Drawing {
+                    self.drw_status(ui);
                 } else if let Some(sk) = &self.sketcher {
                     let empty = sk.sketch.elements.is_empty();
                     let (text, color) = match sk.report.map(|r| r.status) {
@@ -1294,6 +1383,8 @@ impl NovarisApp {
             FileAction::ExportStep => "Exporter en STEP",
             FileAction::ExportStl => "Exporter en STL",
             FileAction::InsertComponent => "Insérer des composants",
+            FileAction::ExportPdf => "Exporter en PDF",
+            FileAction::ExportDxf => "Exporter en DXF",
         };
         let mut run = None;
         let mut close = false;
@@ -1374,7 +1465,7 @@ impl NovarisApp {
         let asm_highlight = self.asm().map(|a| (a.highlighted_faces(), a.hover_face, a.highlighted_component()));
         if let (Some(vp), Some(rs)) = (self.viewport.as_mut(), frame.wgpu_render_state()) {
             if self.mesh_dirty {
-                let mesh = if self.in_assembly { self.assembly.as_ref().and_then(|a| a.scene.as_ref()) } else { self.mesh.as_ref() };
+                let mesh = if self.active == Active::Assembly { self.assembly.as_ref().and_then(|a| a.scene.as_ref()) } else { self.mesh.as_ref() };
                 vp.set_mesh(rs, mesh);
                 self.mesh_dirty = false;
             }
@@ -1408,12 +1499,12 @@ impl NovarisApp {
         }
 
         let painter = ui.painter_at(rect);
-        if !self.in_assembly {
+        if self.active != Active::Assembly {
             self.draw_reference_planes(&painter, &to_screen);
         }
         self.draw_triad(&painter, rect);
 
-        if self.in_assembly {
+        if self.active == Active::Assembly {
             self.asm_interaction(ui, &response, rect, aspect, &to_ndc, &to_screen);
         } else if self.sketcher.is_some() {
             self.sketch_interaction(ui, &response, &painter, rect, aspect, &to_screen, &to_ndc);
@@ -1475,7 +1566,7 @@ impl NovarisApp {
 
     /// What the viewport shows: the part, or the assembly scene
     fn display_mesh(&self) -> Option<&RenderMesh> {
-        if self.in_assembly {
+        if self.active == Active::Assembly {
             self.assembly.as_ref().and_then(|a| a.scene.as_ref())
         } else {
             self.mesh.as_ref()
@@ -2021,7 +2112,18 @@ impl eframe::App for NovarisApp {
             return;
         }
         self.shortcuts(ctx);
-        if self.in_assembly {
+        if self.active == Active::Drawing {
+            egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
+            egui::TopBottomPanel::top("commands").show(ctx, |ui| self.drw_command_manager(ui));
+            egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
+            egui::SidePanel::left("tree").default_width(260.0).min_width(240.0).resizable(true).show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.drw_feature_manager(ui));
+            });
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| self.drw_canvas(ui));
+            self.file_dialog_window(ctx);
+            return;
+        }
+        if self.active == Active::Assembly {
             egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
             egui::TopBottomPanel::top("commands").show(ctx, |ui| self.asm_command_manager(ui));
             egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));

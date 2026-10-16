@@ -250,16 +250,16 @@ fn pick_triangle(mesh: &RenderMesh, ray: &crate::camera::Ray) -> Option<usize> {
 
 impl NovarisApp {
     pub(super) fn asm(&self) -> Option<&AssemblyView> {
-        self.assembly.as_ref().filter(|_| self.in_assembly)
+        self.assembly.as_ref().filter(|_| self.active == Active::Assembly)
     }
 
     fn asm_mut(&mut self) -> Option<&mut AssemblyView> {
-        self.assembly.as_mut().filter(|_| self.in_assembly)
+        self.assembly.as_mut().filter(|_| self.active == Active::Assembly)
     }
 
     pub(super) fn new_assembly(&mut self) {
         self.assembly = Some(AssemblyView::new(AssemblyDocument::new("Assemblage1"), None));
-        self.in_assembly = true;
+        self.active = Active::Assembly;
         self.mesh_dirty = true;
         self.fit_pending = true;
         self.info("Insérez une première pièce : elle sera fixe, comme dans SolidWorks.");
@@ -275,7 +275,7 @@ impl NovarisApp {
             .map(|c| c.name.clone())
             .collect();
         self.assembly = Some(AssemblyView::new(doc, Some(path.to_path_buf())));
-        self.in_assembly = true;
+        self.active = Active::Assembly;
         self.mesh_dirty = true;
         self.fit_pending = true;
         if missing.is_empty() {
@@ -344,7 +344,7 @@ impl NovarisApp {
     /// Open a component's part in part mode; the assembly stays open
     fn open_component_part(&mut self, id: Id) {
         let Some(path) = self.asm().and_then(|a| a.doc.component(id).map(|c| a.doc.part_file(c))) else { return };
-        self.in_assembly = false;
+        self.active = Active::Part;
         self.run_file_action(FileAction::Open, path);
         self.mesh_dirty = true;
     }
@@ -358,7 +358,7 @@ impl NovarisApp {
             }
             self.save();
         }
-        self.in_assembly = true;
+        self.active = Active::Assembly;
         if let Some(a) = self.assembly.as_mut() {
             a.reload();
         }
@@ -537,6 +537,10 @@ impl NovarisApp {
     }
 
     pub(super) fn asm_feature_manager(&mut self, ui: &mut egui::Ui) {
+        if self.drawing.is_some() && ui.button("↩ Enregistrer et revenir à la mise en plan").clicked() {
+            self.back_to_drawing();
+            return;
+        }
         let Some(a) = self.asm() else { return };
         ui.label(egui::RichText::new(format!("🔩 {}", a.doc.name)).strong());
         ui.separator();
@@ -765,7 +769,7 @@ impl NovarisApp {
     }
 
     pub(super) fn asm_windows(&mut self, ctx: &egui::Context) {
-        let Some(a) = self.assembly.as_mut().filter(|_| self.in_assembly) else { return };
+        let Some(a) = self.assembly.as_mut().filter(|_| self.active == Active::Assembly) else { return };
         if a.show_bom {
             let rows = a.doc.bom();
             let mut open = true;

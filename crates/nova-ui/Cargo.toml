@@ -12,6 +12,7 @@ nova-features = { path = "../nova-features" }
 nova-sketch = { path = "../nova-sketch" }
 nova-io = { path = "../nova-io" }
 nova-assembly = { path = "../nova-assembly" }
+nova-drawing = { path = "../nova-drawing" }
 
 eframe = { version = "0.28", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
 bytemuck = { workspace = true, features = ["derive"] }

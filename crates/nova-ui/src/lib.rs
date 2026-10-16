@@ -10,9 +10,12 @@ pub use app::NovarisApp;
 use nova_io::PartDocument;
 use std::path::PathBuf;
 
-/// Open the main window; `path` is an optional .nvcad or .nvasm file to load
+/// Open the main window; `path` is an optional .nvcad, .nvasm or .nvdrw file to load
 pub fn run(path: Option<PathBuf>) -> eframe::Result<()> {
-    let assembly = path.clone().filter(|p| p.extension().is_some_and(|e| e == nova_assembly::EXTENSION));
+    // Assemblies and drawings open after the window exists
+    let assembly = path.clone().filter(|p| {
+        p.extension().is_some_and(|e| e == nova_assembly::EXTENSION || e == nova_drawing::EXTENSION)
+    });
     let path = if assembly.is_some() { None } else { path };
     let (doc, path) = match path {
         Some(p) => match PartDocument::load(&p) {
