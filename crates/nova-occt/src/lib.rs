@@ -42,11 +42,16 @@ mod ffi {
         degenerated: bool,
     }
 
+    /// Face geometry. kind 0 = plane (`point` on it, `dir` = outward
+    /// normal), 1 = cylinder (`point` on the axis, `dir` = axis direction,
+    /// `radius`), 2 = other. `center` is a point inside the face.
     #[derive(Clone, Copy, Debug)]
-    struct FacePlane {
-        planar: bool,
-        origin: P3,
-        normal: P3,
+    struct FaceGeom {
+        kind: u8,
+        point: P3,
+        dir: P3,
+        radius: f64,
+        center: P3,
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -74,14 +79,17 @@ mod ffi {
         fn face_count(s: &Shape) -> usize;
         fn solid_count(s: &Shape) -> usize;
         fn edges(s: &Shape) -> Result<Vec<EdgeData>>;
-        fn face_planes(s: &Shape) -> Result<Vec<FacePlane>>;
+        fn face_geometry(s: &Shape) -> Result<Vec<FaceGeom>>;
+        fn transformed(s: &Shape, m: &[f64]) -> Result<UniquePtr<Shape>>;
+        fn common(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
+        fn compound_with(c: &Shape, s: &Shape) -> Result<UniquePtr<Shape>>;
         fn write_step(s: &Shape, path: &str) -> Result<()>;
         fn clone_shape(s: &Shape) -> UniquePtr<Shape>;
         fn is_valid(s: &Shape) -> bool;
     }
 }
 
-pub use ffi::{Bounds, EdgeData, FacePlane, MeshOut, Seg, P3};
+pub use ffi::{Bounds, EdgeData, FaceGeom, MeshOut, Seg, P3};
 
 /// Error from an OCCT operation
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,9 +215,32 @@ impl Shape {
         ffi::edges(self.inner()).map_err(err)
     }
 
-    /// Plane of each face (same order as the face ids of `triangulate`)
-    pub fn face_planes(&self) -> Result<Vec<FacePlane>> {
-        ffi::face_planes(self.inner()).map_err(err)
+    /// Geometry of each face (same order as the face ids of `triangulate`)
+    pub fn face_geometry(&self) -> Result<Vec<FaceGeom>> {
+        ffi::face_geometry(self.inner()).map_err(err)
+    }
+
+    /// Rigid transform; `m` is a row-major 3x4 matrix [R | t]
+    pub fn transformed(&self, m: &[f64; 12]) -> Result<Shape> {
+        Self::wrap(ffi::transformed(self.inner(), m))
+    }
+
+    /// Material shared by both shapes (may contain no solid)
+    pub fn common(&self, other: &Shape) -> Result<Shape> {
+        Self::wrap(ffi::common(self.inner(), other.inner()))
+    }
+
+    /// One compound holding all the shapes (compounds are flattened one level)
+    pub fn compound(shapes: &[&Shape]) -> Result<Shape> {
+        let (first, rest) = shapes.split_first().ok_or_else(|| Error("no shape to group".into()))?;
+        let mut acc = (*first).clone();
+        if rest.is_empty() {
+            return Ok(acc);
+        }
+        for s in rest {
+            acc = Self::wrap(ffi::compound_with(acc.inner(), s.inner()))?;
+        }
+        Ok(acc)
     }
 
     pub fn write_step(&self, path: &std::path::Path) -> Result<()> {
@@ -278,6 +309,37 @@ mod tests {
         assert_eq!(m.indices.len(), m.tri_faces.len() * 3);
         assert_eq!(*m.tri_faces.iter().max().unwrap(), 5);
         assert_eq!(m.edge_offsets.len(), 13);
+    }
+
+    #[test]
+    fn face_geometry_reports_planes_and_cylinders() {
+        let hole = Shape::planar_face(&[circle(50.0, 30.0, 5.0, 0.0)]).unwrap().prism(P3::new(0.0, 0.0, 20.0)).unwrap();
+        let s = block().cut(&hole).unwrap();
+        let faces = s.face_geometry().unwrap();
+        assert_eq!(faces.iter().filter(|f| f.kind == 0).count(), 6);
+        let cyl: Vec<_> = faces.iter().filter(|f| f.kind == 1).collect();
+        assert_eq!(cyl.len(), 1);
+        assert!((cyl[0].radius - 5.0).abs() < 1e-9);
+        assert!((cyl[0].point.x - 50.0).abs() < 1e-9 && (cyl[0].point.y - 30.0).abs() < 1e-9);
+        assert!((cyl[0].dir.z.abs() - 1.0).abs() < 1e-9);
+        let top = faces.iter().find(|f| f.kind == 0 && (f.point.z - 20.0).abs() < 1e-9).unwrap();
+        assert!((top.dir.z - 1.0).abs() < 1e-9, "outward normal");
+    }
+
+    #[test]
+    fn transform_common_and_compound() {
+        let a = block();
+        // shift by (50, 0, 10): overlap is 50 x 60 x 10
+        let m = [1.0, 0.0, 0.0, 50.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 10.0];
+        let b = a.transformed(&m).unwrap();
+        let bb = b.bounds().unwrap().unwrap();
+        assert!((bb.0.x - 50.0).abs() < 1e-9 && (bb.1.z - 30.0).abs() < 1e-9);
+        assert!((a.common(&b).unwrap().volume().unwrap() - 30_000.0).abs() < 1e-6);
+        let far = a.transformed(&[1.0, 0.0, 0.0, 500.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]).unwrap();
+        assert!(a.common(&far).unwrap().volume().unwrap().abs() < 1e-9);
+        let c = Shape::compound(&[&a, &b, &far]).unwrap();
+        assert_eq!(c.solid_count(), 3);
+        assert!((c.volume().unwrap() - 360_000.0).abs() < 1e-6);
     }
 
     #[test]

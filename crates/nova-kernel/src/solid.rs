@@ -164,6 +164,25 @@ pub struct EdgeInfo {
     pub end: DVec3,
 }
 
+/// Kind of surface under a face
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Surface {
+    /// Plane through `point` with outward `normal`
+    Plane { point: DVec3, normal: DVec3 },
+    /// Cylinder around the axis through `origin` along `axis`
+    Cylinder { origin: DVec3, axis: DVec3, radius: f64 },
+    Other,
+}
+
+/// A face of a solid; the index in `Solid::faces` matches the face ids of
+/// `RenderMesh::triangle_faces`
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceInfo {
+    pub surface: Surface,
+    /// A point inside the face
+    pub center: DVec3,
+}
+
 /// Triangle mesh ready for display, with B-Rep face ids per triangle
 #[derive(Clone, Debug, Default)]
 pub struct RenderMesh {
@@ -261,6 +280,49 @@ impl Solid {
             .into_iter()
             .map(|e| EdgeInfo { mid: dv(e.mid), start: dv(e.start), end: dv(e.end) })
             .collect()
+    }
+
+    /// Faces with their surface type, in the order of the mesh face ids
+    pub fn faces(&self) -> Vec<FaceInfo> {
+        self.inner
+            .face_geometry()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| FaceInfo {
+                surface: match f.kind {
+                    0 => Surface::Plane { point: dv(f.point), normal: dv(f.dir) },
+                    1 => Surface::Cylinder { origin: dv(f.point), axis: dv(f.dir), radius: f.radius },
+                    _ => Surface::Other,
+                },
+                center: dv(f.center),
+            })
+            .collect()
+    }
+
+    /// Copy moved by a rigid transform (rotation + translation)
+    pub fn transformed(&self, m: &DMat4) -> Result<Solid> {
+        let c = m.to_cols_array_2d();
+        // row-major 3x4 from column-major 4x4
+        let rows: [f64; 12] = std::array::from_fn(|i| c[i % 4][i / 4]);
+        self.inner.transformed(&rows).map(|inner| Solid { inner }).map_err(kernel_err)
+    }
+
+    /// Volume of the material shared with another solid
+    pub fn interference_volume(&self, other: &Solid) -> Result<f64> {
+        let common = self.inner.common(&other.inner).map_err(kernel_err)?;
+        Ok(if common.solid_count() == 0 { 0.0 } else { common.volume().unwrap_or(0.0).max(0.0) })
+    }
+
+    /// Material shared with another solid, if any
+    pub fn intersection(&self, other: &Solid) -> Result<Option<Solid>> {
+        let common = self.inner.common(&other.inner).map_err(kernel_err)?;
+        Ok((common.solid_count() > 0).then_some(Solid { inner: common }))
+    }
+
+    /// Group several solids into one body (for assembly export)
+    pub fn compound(solids: &[&Solid]) -> Result<Solid> {
+        let shapes: Vec<&Shape> = solids.iter().map(|s| &s.inner).collect();
+        Shape::compound(&shapes).map(|inner| Solid { inner }).map_err(kernel_err)
     }
 
     /// Number of B-Rep faces
@@ -427,6 +489,37 @@ mod tests {
         assert_eq!(b.face_count(), 6);
         let (lo, hi) = b.bounds().unwrap();
         assert!((hi - lo - DVec3::new(100.0, 60.0, 20.0)).length() < 1e-6);
+    }
+
+    #[test]
+    fn faces_of_a_shaft_and_a_block() {
+        let f = shaft().faces();
+        let cyl: Vec<_> = f.iter().filter_map(|f| match f.surface {
+            Surface::Cylinder { origin, axis, radius } => Some((origin, axis, radius)),
+            _ => None,
+        }).collect();
+        assert_eq!(cyl.len(), 1);
+        assert!(close(cyl[0].2, 10.0, 1e-12));
+        assert!((cyl[0].1.y.abs() - 1.0).abs() < 1e-9 && cyl[0].0.x.abs() < 1e-9);
+        let planes = block().faces();
+        assert_eq!(planes.len(), 6);
+        assert!(planes.iter().any(|f| matches!(f.surface, Surface::Plane { normal, point } if normal.z > 0.99 && (point.z - 20.0).abs() < 1e-9)));
+    }
+
+    #[test]
+    fn rigid_transform_and_interference() {
+        let b = block();
+        let m = rotation_about(DVec3::ZERO, DVec3::Z, PI / 2.0);
+        let r = b.transformed(&m).unwrap();
+        let (lo, hi) = r.bounds().unwrap();
+        assert!((lo - DVec3::new(-60.0, 0.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(0.0, 100.0, 20.0)).length() < 1e-6);
+        let moved = b.transformed(&translation(DVec3::new(90.0, 50.0, 0.0))).unwrap();
+        assert!(close(b.interference_volume(&moved).unwrap(), 10.0 * 10.0 * 20.0, 1e-9));
+        let apart = b.transformed(&translation(DVec3::new(100.0, 0.0, 0.0))).unwrap();
+        assert!(b.interference_volume(&apart).unwrap() < 1e-6, "touching faces are not an interference");
+        let c = Solid::compound(&[&b, &apart]).unwrap();
+        assert_eq!(c.lump_count(), 2);
+        assert!(close(c.volume(), 240_000.0, 1e-9));
     }
 
     #[test]

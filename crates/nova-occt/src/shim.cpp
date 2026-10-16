@@ -3,12 +3,15 @@
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
+#include <BRep_Builder.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
@@ -35,10 +38,14 @@
 #include <TopExp_Explorer.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax1.hxx>
+#include <gp_Cylinder.hxx>
+#include <gp_Trsf.hxx>
 #include <gp_Pln.hxx>
 
 #include <stdexcept>
@@ -348,28 +355,72 @@ rust::Vec<EdgeData> edges(const Shape &s) {
   });
 }
 
-rust::Vec<FacePlane> face_planes(const Shape &s) {
+rust::Vec<FaceGeom> face_geometry(const Shape &s) {
   return guard("face query", [&]() {
-    rust::Vec<FacePlane> out;
+    rust::Vec<FaceGeom> out;
     TopTools_IndexedMapOfShape faces;
     TopExp::MapShapes(s.s, TopAbs_FACE, faces);
     for (int fi = 1; fi <= faces.Extent(); ++fi) {
       const TopoDS_Face &face = TopoDS::Face(faces(fi));
       BRepAdaptor_Surface surf(face);
-      if (surf.GetType() != GeomAbs_Plane) {
-        out.push_back(FacePlane{false, P3{0, 0, 0}, P3{0, 0, 1}});
-        continue;
-      }
       double u0, u1, v0, v1;
       BRepTools::UVBounds(face, u0, u1, v0, v1);
-      gp_Pnt p = surf.Value((u0 + u1) / 2.0, (v0 + v1) / 2.0);
-      gp_Dir n = surf.Plane().Axis().Direction();
-      if (face.Orientation() == TopAbs_REVERSED) {
-        n.Reverse();
+      gp_Pnt mid = surf.Value((u0 + u1) / 2.0, (v0 + v1) / 2.0);
+      FaceGeom g{2, p3(mid), P3{0, 0, 1}, 0.0, p3(mid)};
+      if (surf.GetType() == GeomAbs_Plane) {
+        gp_Dir n = surf.Plane().Axis().Direction();
+        if (face.Orientation() == TopAbs_REVERSED) {
+          n.Reverse();
+        }
+        g = FaceGeom{0, p3(mid), p3(n), 0.0, p3(mid)};
+      } else if (surf.GetType() == GeomAbs_Cylinder) {
+        gp_Cylinder c = surf.Cylinder();
+        g = FaceGeom{1, p3(c.Axis().Location()), p3(c.Axis().Direction()), c.Radius(), p3(mid)};
       }
-      out.push_back(FacePlane{true, p3(p), p3(n)});
+      out.push_back(g);
     }
     return out;
+  });
+}
+
+std::unique_ptr<Shape> transformed(const Shape &s, rust::Slice<const double> m) {
+  return guard("transform", [&]() {
+    if (m.size() != 12) {
+      throw std::runtime_error("expected a 3x4 matrix");
+    }
+    gp_Trsf t;
+    t.SetValues(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+    BRepBuilderAPI_Transform op(s.s, t, Standard_True);
+    return wrap(op.Shape(), "transform");
+  });
+}
+
+std::unique_ptr<Shape> common(const Shape &a, const Shape &b) {
+  return guard("intersection", [&]() {
+    BRepAlgoAPI_Common op(a.s, b.s);
+    if (!op.IsDone() || op.HasErrors()) {
+      throw std::runtime_error("boolean not done");
+    }
+    return wrap(op.Shape(), "intersection");
+  });
+}
+
+std::unique_ptr<Shape> compound_with(const Shape &c, const Shape &s) {
+  return guard("compound", [&]() {
+    BRep_Builder b;
+    TopoDS_Compound out;
+    b.MakeCompound(out);
+    if (!c.s.IsNull()) {
+      if (c.s.ShapeType() == TopAbs_COMPOUND) {
+        for (TopoDS_Iterator it(c.s); it.More(); it.Next()) {
+          b.Add(out, it.Value());
+        }
+      } else {
+        b.Add(out, c.s);
+      }
+    }
+    b.Add(out, s.s);
+    return wrap(out, "compound");
   });
 }
 

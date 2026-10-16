@@ -13,7 +13,7 @@ struct P3;
 struct Seg;
 struct MeshOut;
 struct EdgeData;
-struct FacePlane;
+struct FaceGeom;
 struct Bounds;
 
 class Shape {
@@ -34,7 +34,10 @@ Bounds bounds(const Shape &s);
 size_t face_count(const Shape &s);
 size_t solid_count(const Shape &s);
 rust::Vec<EdgeData> edges(const Shape &s);
-rust::Vec<FacePlane> face_planes(const Shape &s);
+rust::Vec<FaceGeom> face_geometry(const Shape &s);
+std::unique_ptr<Shape> transformed(const Shape &s, rust::Slice<const double> m);
+std::unique_ptr<Shape> common(const Shape &a, const Shape &b);
+std::unique_ptr<Shape> compound_with(const Shape &c, const Shape &s);
 void write_step(const Shape &s, rust::Str path);
 std::unique_ptr<Shape> clone_shape(const Shape &s);
 bool is_valid(const Shape &s);

@@ -1,14 +1,19 @@
 [package]
 name = "nova-assembly"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 
 [dependencies]
 nova-core = { path = "../nova-core" }
-nova-math = { path = "../nova-math" }
-nova-geometry = { path = "../nova-geometry" }
 nova-kernel = { path = "../nova-kernel" }
+nova-io = { path = "../nova-io" }
+glam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+nalgebra = { workspace = true }
 
-[lib]
-name = "nova_assembly"
-path = "src/lib.rs"
+[dev-dependencies]
+nova-features = { path = "../nova-features" }
+nova-sketch = { path = "../nova-sketch" }
