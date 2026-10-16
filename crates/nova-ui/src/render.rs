@@ -15,6 +15,8 @@ struct U {
     base_color: vec4<f32>,
     sel: vec4<i32>,
     line_color: vec4<f32>,
+    // x: second selected face, y: selected component, z: tint components
+    sel2: vec4<i32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 
@@ -43,7 +45,15 @@ fn fs_mesh(i: MeshOut) -> @location(0) vec4<f32> {
     let n = normalize(i.nor);
     let l = normalize(u.light_dir.xyz);
     var c = u.base_color.rgb;
-    if (i32(i.face) == u.sel.x) {
+    let comp = i32(i.face >> 16u);
+    if (u.sel2.z == 1) {
+        let k = f32(comp);
+        c = c + 0.07 * vec3<f32>(sin(k * 2.1), sin(k * 3.7 + 1.0), sin(k * 5.3 + 2.0));
+    }
+    if (u.sel2.y >= 0 && comp == u.sel2.y) {
+        c = mix(c, vec3<f32>(0.25, 0.55, 1.0), 0.35);
+    }
+    if (i32(i.face) == u.sel.x || i32(i.face) == u.sel2.x) {
         c = vec3<f32>(0.25, 0.55, 1.0);
     } else if (i32(i.face) == u.sel.y) {
         c = mix(c, vec3<f32>(1.0, 0.55, 0.15), 0.45);
@@ -98,6 +108,7 @@ struct Uniforms {
     base_color: [f32; 4],
     sel: [i32; 4],
     line_color: [f32; 4],
+    sel2: [i32; 4],
 }
 
 #[repr(C)]
@@ -115,6 +126,11 @@ pub struct FrameParams {
     pub light_dir: glam::Vec3,
     pub selected_face: Option<u32>,
     pub hover_face: Option<u32>,
+    pub selected_face2: Option<u32>,
+    /// Highlight every face whose id has this value in its high 16 bits
+    pub selected_component: Option<u32>,
+    /// Vary the shade per component (face id high bits), for assemblies
+    pub tint_components: bool,
 }
 
 struct Target {
@@ -339,6 +355,7 @@ impl Viewport {
             base_color: [0.62, 0.64, 0.68, 1.0],
             sel: [to_i(params.selected_face), to_i(params.hover_face), 0, 0],
             line_color: [0.02, 0.02, 0.03, 1.0],
+            sel2: [to_i(params.selected_face2), to_i(params.selected_component), params.tint_components as i32, 0],
         };
         rs.queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
 

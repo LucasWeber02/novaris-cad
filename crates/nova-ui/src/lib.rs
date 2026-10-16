@@ -10,8 +10,10 @@ pub use app::NovarisApp;
 use nova_io::PartDocument;
 use std::path::PathBuf;
 
-/// Open the main window; `path` is an optional .nvcad file to load
+/// Open the main window; `path` is an optional .nvcad or .nvasm file to load
 pub fn run(path: Option<PathBuf>) -> eframe::Result<()> {
+    let assembly = path.clone().filter(|p| p.extension().is_some_and(|e| e == nova_assembly::EXTENSION));
+    let path = if assembly.is_some() { None } else { path };
     let (doc, path) = match path {
         Some(p) => match PartDocument::load(&p) {
             Ok(doc) => (doc, Some(p)),
@@ -29,5 +31,12 @@ pub fn run(path: Option<PathBuf>) -> eframe::Result<()> {
             .with_inner_size([1400.0, 860.0]),
         ..Default::default()
     };
-    eframe::run_native("NOVARIS CAD", options, Box::new(move |cc| Ok(Box::new(NovarisApp::new(cc, doc, path)))))
+    eframe::run_native("NOVARIS CAD", options, Box::new(move |cc| {
+            let mut app = NovarisApp::new(cc, doc, path);
+            if let Some(a) = assembly {
+                app.open(a);
+            }
+            Ok(Box::new(app))
+        }),
+    )
 }

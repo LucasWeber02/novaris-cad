@@ -14,6 +14,10 @@ nova-ui = { path = "../../crates/nova-ui" }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+nova-assembly = { path = "../../crates/nova-assembly" }
+nova-core = { path = "../../crates/nova-core" }
+nova-kernel = { path = "../../crates/nova-kernel" }
+glam = { workspace = true }
 nova-features = { path = "../../crates/nova-features" }
 nova-io = { path = "../../crates/nova-io" }
 nova-sketch = { path = "../../crates/nova-sketch" }

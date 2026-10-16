@@ -1,9 +1,9 @@
 # NOVARIS CAD
 
 Logiciel de CAO 3D paramétrique en Rust, inspiré du flux de travail de SolidWorks :
-esquisse contrainte → fonctions → pièce → export.
+esquisse contrainte → fonctions → pièce → assemblage → export.
 
-## État : Jalon 2 (fonctions de pièce courantes)
+## État : Jalon 3 (assemblages avec contraintes)
 
 Ce qui fonctionne aujourd'hui :
 
@@ -26,7 +26,14 @@ Ce qui fonctionne aujourd'hui :
   - une erreur dans une fonction ne bloque pas les autres ;
   - reconstruction incrémentale.
 - **Noyau B-Rep exact** : [OpenCascade](https://dev.opencascade.org/) 7.8, le noyau de FreeCAD, via la crate `nova-occt`. Ses booléens sont exacts, y compris pour les faces coplanaires, et le volume aussi. Toute exception OCCT devient une erreur affichée sur la fonction concernée, jamais un plantage.
-- **Fichiers** : `.nvcad` (historique paramétrique en JSON, reconstruit à l'ouverture), export STEP (AP214, surfaces exactes) et STL.
+- **Assemblages** (`.nvasm`) :
+  - insertion de pièces `.nvcad` ; la première est fixe, chaque instance est nommée comme dans SolidWorks (« Axe<2> ») ;
+  - contraintes standard entre faces planes ou cylindriques : coïncidente, parallèle, perpendiculaire, distance, angle, coaxiale, avec alignement aligné / anti-aligné proposé d'après la position actuelle ;
+  - solveur 3D (Levenberg-Marquardt) avec degrés de liberté par composant : « (f) » fixe, « (-) » sous-contraint ; une contrainte contradictoire est refusée sans rien déplacer ;
+  - déplacement d'un composant libre à la souris (glisser), rotation avec Maj, puis les contraintes sont réappliquées ;
+  - détection d'interférences exacte (volumes communs affichés en rouge), nomenclature, export STEP de l'ensemble ;
+  - « Ouvrir la pièce » depuis l'arbre, puis « Enregistrer et revenir à l'assemblage » : les contraintes suivent les faces modifiées.
+- **Fichiers** : `.nvcad` (historique paramétrique en JSON, reconstruit à l'ouverture), `.nvasm` (composants, placements et contraintes ; chemins des pièces relatifs au fichier), export STEP (AP214, surfaces exactes) et STL.
 - **Interface** egui + wgpu :
   - CommandManager, FeatureManager, PropertyManager ;
   - vue 3D orthographique, sélection de faces et d'arêtes ;
@@ -36,7 +43,8 @@ Limites connues :
 
 - **Nommage des arêtes** : un congé repère ses arêtes par leur position (le point milieu). Si une modification déplace ou supprime fortement une arête, la fonction passe en erreur et il faut la ressélectionner.
 - **Calculs synchrones** : l'interface se fige pendant les calculs, ce qui reste bref sur des pièces simples.
-- **Pas encore disponibles** : assemblages, mises en plan, balayages et lissages, tôlerie.
+- **Contraintes d'assemblage** : les faces sont repérées par leur position, comme les arêtes des congés. Pas encore de sous-assemblages, de contraintes mécaniques (engrenage, came, tangente) ni de vues éclatées ; l'export STL d'un assemblage n'est pas disponible.
+- **Pas encore disponibles** : mises en plan, balayages et lissages, tôlerie.
 - **Fichiers SolidWorks** : les `.sldprt` (format propriétaire) ne sont pas lisibles ; l'échange se fait en STEP.
 - **Dialogues de fichiers** : on saisit le chemin à la main.
 
@@ -53,6 +61,8 @@ sudo apt install cmake build-essential
 cargo run --release -p novaris-desktop            # nouvelle pièce
 cargo run --release -p novaris-desktop -- piece.nvcad
 cargo run --release -p novaris-desktop --example demo_part -- plaque.nvcad   # pièce d'exemple
+cargo run --release -p novaris-desktop --example demo_assembly -- demo_assemblage
+cargo run --release -p novaris-desktop -- demo_assemblage/ensemble.nvasm      # assemblage d'exemple
 cargo test --workspace
 ```
 
@@ -68,9 +78,12 @@ Windows et macOS devraient fonctionner avec la même chaîne (cmake + compilateu
 4. Pour un congé : cliquez sur une arête de la pièce (Maj+clic pour en ajouter), puis sur **Congé**.
 5. Double-cliquez sur une fonction de l'arbre pour la modifier.
 
+Assemblage : **Fichier > Nouvel assemblage**, insérez une pièce, puis d'autres. Cliquez **Contrainte**, cliquez deux faces dans la vue, choisissez le type et validez avec ✔ ; le PropertyManager reste ouvert pour la contrainte suivante, comme dans SolidWorks.
+
 | Souris / clavier | Action |
 |---|---|
 | Bouton du milieu (ou droit) glissé | Rotation |
+| Bouton gauche glissé (assemblage) | Déplacer un composant libre (Maj : le faire pivoter) |
 | Ctrl + bouton du milieu glissé | Translation |
 | Molette | Zoom sur le curseur |
 | F | Zoom au mieux |
@@ -89,15 +102,15 @@ crates/
   nova-sketch     esquisses 2D, solveur de contraintes, extraction de contours
   nova-features   arbre de création paramétrique et reconstruction
   nova-io         fichiers .nvcad, export STEP / STL
-  nova-ui         application egui : caméra, rendu wgpu, édition d'esquisse
-  (nova-assembly, nova-sheet-metal, nova-interaction, nova-shaders, nova-commands :
+  nova-assembly   assemblages : composants, contraintes, solveur 3D, interférences, nomenclature
+  nova-ui         application egui : caméra, rendu wgpu, édition d'esquisse, mode assemblage
+  (nova-sheet-metal, nova-interaction, nova-shaders, nova-commands :
    prototypes antérieurs, pas encore reliés à l'application)
 apps/desktop      exécutable `novaris`
 ```
 
 ## Feuille de route
 
-- **J3** : assemblages avec contraintes.
 - **J4** : mises en plan (projections, cotes, PDF/DXF).
 - **J5** : tôlerie, configurations, équations, balayages et lissages.
 

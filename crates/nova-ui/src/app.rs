@@ -2,6 +2,8 @@
 //! SolidWorks: CommandManager on top, FeatureManager tree on the left,
 //! PropertyManager when editing, graphics area in the middle.
 
+mod assembly;
+
 use crate::camera::{Camera, StandardView};
 use crate::render::{FrameParams, Viewport};
 use crate::sketcher::{self, Preview, SelItem, Sketcher, Tool};
@@ -80,11 +82,14 @@ enum FileAction {
     SaveAs,
     ExportStep,
     ExportStl,
+    InsertComponent,
 }
 
 struct FileDialog {
     action: FileAction,
     path: String,
+    /// Give the path field keyboard focus on the first frame
+    fresh: bool,
 }
 
 /// A dimension being typed in the Modify box
@@ -125,6 +130,10 @@ pub struct NovarisApp {
     cursor_sketch: Option<DVec2>,
     /// Frames to wait before the first rebuild, so the window shows first
     startup_frames: u8,
+    /// Open assembly (kept while one of its parts is edited)
+    assembly: Option<assembly::AssemblyView>,
+    /// Showing the assembly rather than the part
+    in_assembly: bool,
 }
 
 impl NovarisApp {
@@ -159,6 +168,8 @@ impl NovarisApp {
             message: None,
             cursor_sketch: None,
             startup_frames: 2,
+            assembly: None,
+            in_assembly: false,
         };
         if app.doc.tree.is_empty() {
             app.startup_frames = 0;
@@ -168,6 +179,11 @@ impl NovarisApp {
     }
 
     // ── Document operations ──────────────────────────────────────
+
+    /// Open a part (.nvcad) or assembly (.nvasm) file
+    pub fn open(&mut self, path: PathBuf) {
+        self.run_file_action(FileAction::Open, path);
+    }
 
     fn rebuild(&mut self) {
         self.doc.tree.rebuild();
@@ -216,6 +232,7 @@ impl NovarisApp {
     }
 
     fn new_document(&mut self) {
+        self.in_assembly = false;
         self.doc = PartDocument::new("Pièce1");
         self.path = None;
         self.dirty = false;
@@ -230,6 +247,10 @@ impl NovarisApp {
     }
 
     fn save(&mut self) {
+        if self.in_assembly {
+            self.asm_save();
+            return;
+        }
         match self.path.clone() {
             Some(p) => match self.doc.save(&p) {
                 Ok(()) => {
@@ -244,29 +265,38 @@ impl NovarisApp {
 
     fn open_file_dialog(&mut self, action: FileAction) {
         let dir = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."));
-        let stem = self
-            .path
-            .as_ref()
-            .and_then(|p| p.file_stem())
-            .and_then(|s| s.to_str())
-            .unwrap_or(&self.doc.name)
-            .to_string();
+        let (current, name) = match self.asm() {
+            Some(a) => (a.path.clone(), a.doc.name.clone()),
+            None => (self.path.clone(), self.doc.name.clone()),
+        };
+        let stem = current.as_ref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or(&name).to_string();
         let ext = match action {
-            FileAction::Open | FileAction::SaveAs => "nvcad",
+            FileAction::Open | FileAction::SaveAs | FileAction::InsertComponent if self.in_assembly => {
+                if action == FileAction::SaveAs { "nvasm" } else { "nvcad" }
+            }
+            FileAction::Open | FileAction::SaveAs | FileAction::InsertComponent => "nvcad",
             FileAction::ExportStep => "step",
             FileAction::ExportStl => "stl",
         };
-        let path = match (&self.path, action) {
+        let path = match (&current, action) {
             (Some(p), FileAction::Open | FileAction::SaveAs) => p.display().to_string(),
+            (Some(p), FileAction::InsertComponent) => p.with_file_name("piece.nvcad").display().to_string(),
             (Some(p), _) => p.with_extension(ext).display().to_string(),
+            (None, FileAction::InsertComponent) => dir.join("piece.nvcad").display().to_string(),
             (None, _) => dir.join(format!("{stem}.{ext}")).display().to_string(),
         };
-        self.file_dialog = Some(FileDialog { action, path });
+        self.file_dialog = Some(FileDialog { action, path, fresh: true });
     }
 
     fn run_file_action(&mut self, action: FileAction, path: PathBuf) {
         let body = self.doc.tree.body().cloned();
+        let is_asm_file = path.extension().is_some_and(|e| e == nova_assembly::EXTENSION);
         let result = match action {
+            FileAction::Open if is_asm_file => self.open_assembly(&path),
+            FileAction::InsertComponent => self.asm_insert(&path),
+            FileAction::SaveAs if self.in_assembly => self.asm_save_as(&path),
+            FileAction::ExportStep if self.in_assembly => self.asm_export_step(&path),
+            FileAction::ExportStl if self.in_assembly => Err("l'export STL d'un assemblage n'est pas encore disponible".into()),
             FileAction::Open => match PartDocument::load(&path) {
                 Ok(doc) => {
                     self.new_document();
@@ -593,11 +623,17 @@ impl NovarisApp {
         let key = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
         let cmd = Modifiers::COMMAND;
         if key(cmd | Modifiers::SHIFT, Key::Z) || key(cmd, Key::Y) {
-            if self.sketcher.is_none() {
+            if let Some(a) = self.assembly.as_mut().filter(|_| self.in_assembly) {
+                a.redo();
+                self.mesh_dirty = true;
+            } else if self.sketcher.is_none() {
                 self.redo();
             }
         } else if key(cmd, Key::Z) {
-            if self.sketcher.is_none() {
+            if let Some(a) = self.assembly.as_mut().filter(|_| self.in_assembly) {
+                a.undo();
+                self.mesh_dirty = true;
+            } else if self.sketcher.is_none() {
                 self.undo();
             }
         } else if key(cmd, Key::S) {
@@ -620,6 +656,10 @@ impl NovarisApp {
             }
         } else if key(Modifiers::NONE, Key::F) {
             self.fit_pending = true;
+        } else if self.in_assembly && key(Modifiers::NONE, Key::Escape) {
+            self.asm_escape();
+        } else if self.in_assembly && key(Modifiers::NONE, Key::Delete) {
+            self.asm_delete_selection();
         } else if key(Modifiers::NONE, Key::Escape) {
             if let Some(s) = self.sketcher.as_mut() {
                 if s.stage.is_empty() && s.tool != Tool::Select {
@@ -649,6 +689,10 @@ impl NovarisApp {
                     self.new_document();
                     ui.close_menu();
                 }
+                if ui.button("Nouvel assemblage").clicked() {
+                    self.new_assembly();
+                    ui.close_menu();
+                }
                 if ui.button("Ouvrir…        Ctrl+O").clicked() {
                     self.open_file_dialog(FileAction::Open);
                     ui.close_menu();
@@ -659,6 +703,14 @@ impl NovarisApp {
                 }
                 if ui.button("Enregistrer sous…").clicked() {
                     self.open_file_dialog(FileAction::SaveAs);
+                    ui.close_menu();
+                }
+                if self.in_assembly && ui.button("Insérer des composants…").clicked() {
+                    self.open_file_dialog(FileAction::InsertComponent);
+                    ui.close_menu();
+                }
+                if self.assembly.is_some() && !self.in_assembly && ui.button("Retour à l'assemblage").clicked() {
+                    self.back_to_assembly();
                     ui.close_menu();
                 }
                 ui.separator();
@@ -676,6 +728,19 @@ impl NovarisApp {
                 }
             });
             ui.menu_button("Édition", |ui| {
+                if let Some(a) = self.assembly.as_mut().filter(|_| self.in_assembly) {
+                    if ui.add_enabled(a.can_undo(), egui::Button::new("Annuler   Ctrl+Z")).clicked() {
+                        a.undo();
+                        self.mesh_dirty = true;
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(a.can_redo(), egui::Button::new("Rétablir   Ctrl+Y")).clicked() {
+                        a.redo();
+                        self.mesh_dirty = true;
+                        ui.close_menu();
+                    }
+                    return;
+                }
                 let in_sketch = self.sketcher.is_some();
                 if ui.add_enabled(!in_sketch && !self.undo.is_empty(), egui::Button::new("Annuler   Ctrl+Z")).clicked() {
                     self.undo();
@@ -704,11 +769,11 @@ impl NovarisApp {
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let title = format!(
-                    "{}{} — NOVARIS CAD",
-                    self.doc.name,
-                    if self.dirty { " *" } else { "" }
-                );
+                let (name, dirty) = match self.asm() {
+                    Some(a) => (a.doc.name.clone(), a.dirty),
+                    None => (self.doc.name.clone(), self.dirty),
+                };
+                let title = format!("{name}{} — NOVARIS CAD", if dirty { " *" } else { "" });
                 ui.label(egui::RichText::new(title).strong());
             });
         });
@@ -790,6 +855,10 @@ impl NovarisApp {
     }
 
     fn feature_manager(&mut self, ui: &mut egui::Ui) {
+        if self.assembly.is_some() && ui.button("↩ Enregistrer et revenir à l'assemblage").clicked() {
+            self.back_to_assembly();
+            return;
+        }
         ui.label(egui::RichText::new(&self.doc.name).strong());
         ui.separator();
         for plane in [StdPlane::Front, StdPlane::Top, StdPlane::Right] {
@@ -1193,7 +1262,9 @@ impl NovarisApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label("MMGS");
                 ui.separator();
-                if let Some(sk) = &self.sketcher {
+                if self.in_assembly {
+                    self.asm_status(ui);
+                } else if let Some(sk) = &self.sketcher {
                     let empty = sk.sketch.elements.is_empty();
                     let (text, color) = match sk.report.map(|r| r.status) {
                         _ if empty => ("Esquisse vide".to_string(), Color32::DARK_GRAY),
@@ -1222,12 +1293,17 @@ impl NovarisApp {
             FileAction::SaveAs => "Enregistrer sous",
             FileAction::ExportStep => "Exporter en STEP",
             FileAction::ExportStl => "Exporter en STL",
+            FileAction::InsertComponent => "Insérer des composants",
         };
         let mut run = None;
         let mut close = false;
         egui::Window::new(title).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.label("Chemin du fichier :");
             let r = ui.add(egui::TextEdit::singleline(&mut dialog.path).desired_width(420.0));
+            if dialog.fresh {
+                dialog.fresh = false;
+                r.request_focus();
+            }
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 run = Some((dialog.action, PathBuf::from(&dialog.path)));
             }
@@ -1257,7 +1333,7 @@ impl NovarisApp {
 
         if self.fit_pending {
             self.fit_pending = false;
-            let bounds = self.mesh.as_ref().and_then(|m| m.bounds());
+            let bounds = self.display_mesh().and_then(|m| m.bounds());
             let (lo, hi) = bounds.unwrap_or((DVec3::splat(-60.0), DVec3::splat(60.0)));
             self.camera.fit(lo, hi, aspect);
         }
@@ -1294,16 +1370,18 @@ impl NovarisApp {
         }
 
         // Render the 3D scene
+        let radius = self.display_mesh().and_then(|m| m.bounds()).map(|(lo, hi)| (hi - lo).length()).unwrap_or(200.0);
+        let asm_highlight = self.asm().map(|a| (a.highlighted_faces(), a.hover_face, a.highlighted_component()));
         if let (Some(vp), Some(rs)) = (self.viewport.as_mut(), frame.wgpu_render_state()) {
             if self.mesh_dirty {
-                vp.set_mesh(rs, self.mesh.as_ref());
+                let mesh = if self.in_assembly { self.assembly.as_ref().and_then(|a| a.scene.as_ref()) } else { self.mesh.as_ref() };
+                vp.set_mesh(rs, mesh);
                 self.mesh_dirty = false;
             }
             let ppp = ui.ctx().pixels_per_point();
             let size = [(rect.width() * ppp) as u32, (rect.height() * ppp) as u32];
-            let radius = self.mesh.as_ref().and_then(|m| m.bounds()).map(|(lo, hi)| (hi - lo).length()).unwrap_or(200.0);
             let light = (self.camera.back() * 1.0 + self.camera.up() * 0.35 - self.camera.right() * 0.25).normalize();
-            let params = FrameParams {
+            let mut params = FrameParams {
                 view_proj: self.camera.view_proj(aspect, radius + (self.camera.target.length())),
                 light_dir: light.as_vec3(),
                 selected_face: match self.selection {
@@ -1311,7 +1389,17 @@ impl NovarisApp {
                     _ => None,
                 },
                 hover_face: self.hover_face,
+                selected_face2: None,
+                selected_component: None,
+                tint_components: false,
             };
+            if let Some((faces, hover, component)) = asm_highlight {
+                params.selected_face = faces.first().copied();
+                params.selected_face2 = faces.get(1).copied();
+                params.hover_face = hover;
+                params.selected_component = component;
+                params.tint_components = true;
+            }
             let tex = vp.paint(rs, size, &params);
             ui.painter().image(tex, rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
         } else {
@@ -1320,10 +1408,14 @@ impl NovarisApp {
         }
 
         let painter = ui.painter_at(rect);
-        self.draw_reference_planes(&painter, &to_screen);
+        if !self.in_assembly {
+            self.draw_reference_planes(&painter, &to_screen);
+        }
         self.draw_triad(&painter, rect);
 
-        if self.sketcher.is_some() {
+        if self.in_assembly {
+            self.asm_interaction(ui, &response, rect, aspect, &to_ndc, &to_screen);
+        } else if self.sketcher.is_some() {
             self.sketch_interaction(ui, &response, &painter, rect, aspect, &to_screen, &to_ndc);
         } else {
             let shift = ui.input(|i| i.modifiers.shift || i.modifiers.ctrl);
@@ -1378,6 +1470,15 @@ impl NovarisApp {
             let v = Vec2::new(axis.dot(self.camera.right()) as f32, -axis.dot(self.camera.up()) as f32) * 28.0;
             painter.line_segment([origin, origin + v], Stroke::new(2.0_f32, color));
             painter.text(origin + v * 1.2, egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(11.0), color);
+        }
+    }
+
+    /// What the viewport shows: the part, or the assembly scene
+    fn display_mesh(&self) -> Option<&RenderMesh> {
+        if self.in_assembly {
+            self.assembly.as_ref().and_then(|a| a.scene.as_ref())
+        } else {
+            self.mesh.as_ref()
         }
     }
 
@@ -1920,6 +2021,24 @@ impl eframe::App for NovarisApp {
             return;
         }
         self.shortcuts(ctx);
+        if self.in_assembly {
+            egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
+            egui::TopBottomPanel::top("commands").show(ctx, |ui| self.asm_command_manager(ui));
+            egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
+            egui::SidePanel::left("tree").default_width(260.0).min_width(240.0).resizable(true).show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if self.asm_has_editor() {
+                        self.asm_mate_property_manager(ui);
+                    } else {
+                        self.asm_feature_manager(ui);
+                    }
+                });
+            });
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| self.graphics_area(ui, frame));
+            self.file_dialog_window(ctx);
+            self.asm_windows(ctx);
+            return;
+        }
         let in_sketch = self.sketcher.is_some();
         egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
         egui::TopBottomPanel::top("commands").show(ctx, |ui| self.command_manager(ui));
