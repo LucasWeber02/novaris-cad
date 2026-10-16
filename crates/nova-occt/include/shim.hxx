@@ -14,6 +14,7 @@ struct Seg;
 struct MeshOut;
 struct EdgeData;
 struct FaceGeom;
+struct ProjEdge;
 struct Bounds;
 
 class Shape {
@@ -39,6 +40,7 @@ std::unique_ptr<Shape> transformed(const Shape &s, rust::Slice<const double> m);
 std::unique_ptr<Shape> common(const Shape &a, const Shape &b);
 std::unique_ptr<Shape> compound_with(const Shape &c, const Shape &s);
 void write_step(const Shape &s, rust::Str path);
+rust::Vec<ProjEdge> hlr_project(const Shape &s, P3 dir, P3 x_dir, bool hidden, double deflection);
 std::unique_ptr<Shape> clone_shape(const Shape &s);
 bool is_valid(const Shape &s);
 

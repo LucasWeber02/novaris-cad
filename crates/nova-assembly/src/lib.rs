@@ -750,7 +750,8 @@ impl AssemblyDocument {
     }
 }
 
-fn absolute(p: &Path) -> PathBuf {
+/// Absolute path (relative paths start from the current directory)
+pub fn absolute(p: &Path) -> PathBuf {
     if p.is_absolute() {
         p.to_path_buf()
     } else {
@@ -759,7 +760,7 @@ fn absolute(p: &Path) -> PathBuf {
 }
 
 /// Remove `.` and `..` without touching the file system
-fn normalize(p: &Path) -> PathBuf {
+pub fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in p.components() {
         match part {
@@ -776,7 +777,7 @@ fn normalize(p: &Path) -> PathBuf {
 }
 
 /// `path` relative to `base` (both absolute); absolute if they share no root
-fn relative_to(path: &Path, base: &Path) -> PathBuf {
+pub fn relative_to(path: &Path, base: &Path) -> PathBuf {
     let p: Vec<_> = path.components().collect();
     let b: Vec<_> = base.components().collect();
     let common = p.iter().zip(&b).take_while(|(x, y)| x == y).count();

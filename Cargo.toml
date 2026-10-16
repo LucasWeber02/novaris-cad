@@ -10,6 +10,7 @@ members = [
     "crates/nova-ui",
     "crates/nova-io",
     "crates/nova-assembly",
+    "crates/nova-drawing",
     "crates/nova-sheet-metal",
     "crates/nova-interaction",
     "crates/nova-shaders",

@@ -183,6 +183,38 @@ pub struct FaceInfo {
     pub center: DVec3,
 }
 
+/// Shape of a projected edge, in view coordinates
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ProjCurve {
+    Line,
+    /// Circular arc from `a` to `b` around `center`
+    Arc { center: DVec2, radius: f64 },
+    Other,
+}
+
+/// What kind of model edge a projected edge comes from
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeClass {
+    /// Sharp edge between two faces
+    Sharp,
+    /// Silhouette of a curved face
+    Outline,
+    /// Tangent edge between smoothly joined faces
+    Smooth,
+}
+
+/// One edge of an orthographic projection, in view coordinates
+/// (x along the view's right, y along its up direction)
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectedEdge {
+    pub visible: bool,
+    pub class: EdgeClass,
+    pub curve: ProjCurve,
+    pub a: DVec2,
+    pub b: DVec2,
+    pub points: Vec<DVec2>,
+}
+
 /// Triangle mesh ready for display, with B-Rep face ids per triangle
 #[derive(Clone, Debug, Default)]
 pub struct RenderMesh {
@@ -297,6 +329,50 @@ impl Solid {
                 center: dv(f.center),
             })
             .collect()
+    }
+
+    /// Hidden-line projection seen from `toward_viewer`, with `right` as
+    /// the view's x axis (its y axis is `toward_viewer × right`)
+    pub fn project(&self, toward_viewer: DVec3, right: DVec3, hidden: bool) -> Result<Vec<ProjectedEdge>> {
+        let deflection = (self.size() * 5e-4).max(0.005);
+        let edges = self
+            .inner
+            .hlr_project(p3(toward_viewer.normalize()), p3(right.normalize()), hidden, deflection)
+            .map_err(kernel_err)?;
+        let v2 = |p: P3| DVec2::new(p.x, p.y);
+        Ok(edges
+            .into_iter()
+            .map(|e| ProjectedEdge {
+                visible: e.visible,
+                class: match e.category {
+                    0 => EdgeClass::Sharp,
+                    1 => EdgeClass::Outline,
+                    _ => EdgeClass::Smooth,
+                },
+                curve: match e.kind {
+                    0 => ProjCurve::Line,
+                    1 => ProjCurve::Arc { center: v2(e.center), radius: e.radius },
+                    _ => ProjCurve::Other,
+                },
+                a: v2(e.a),
+                b: v2(e.b),
+                points: e.points.chunks_exact(2).map(|c| DVec2::new(c[0], c[1])).collect(),
+            })
+            .collect())
+    }
+
+    /// Distinct vertices (edge end points)
+    pub fn vertices(&self) -> Vec<DVec3> {
+        let tol = (self.size() * 1e-9).max(1e-9);
+        let mut out: Vec<DVec3> = Vec::new();
+        for e in self.edges() {
+            for p in [e.start, e.end] {
+                if !out.iter().any(|q| (*q - p).length() <= tol) {
+                    out.push(p);
+                }
+            }
+        }
+        out
     }
 
     /// Copy moved by a rigid transform (rotation + translation)
@@ -504,6 +580,18 @@ mod tests {
         let planes = block().faces();
         assert_eq!(planes.len(), 6);
         assert!(planes.iter().any(|f| matches!(f.surface, Surface::Plane { normal, point } if normal.z > 0.99 && (point.z - 20.0).abs() < 1e-9)));
+    }
+
+    #[test]
+    fn projection_in_view_coordinates() {
+        let top = block().project(DVec3::Y, DVec3::X, true).unwrap();
+        // Top view of the block: a 100 x 20 rectangle, y = -z
+        assert_eq!(top.iter().filter(|e| e.visible).count(), 4);
+        let ys: Vec<f64> = top.iter().flat_map(|e| [e.a.y, e.b.y]).collect();
+        assert!(ys.iter().all(|y| y.abs() < 1e-9 || (y + 20.0).abs() < 1e-9), "{ys:?}");
+        assert_eq!(block().vertices().len(), 8);
+        let side = shaft().project(DVec3::Z, DVec3::X, true).unwrap();
+        assert!(side.iter().any(|e| e.class == EdgeClass::Outline), "a cylinder seen from the side has silhouettes");
     }
 
     #[test]

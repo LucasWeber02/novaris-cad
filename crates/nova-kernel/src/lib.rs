@@ -14,7 +14,7 @@ pub use brep::BRep;
 pub use plane::Plane;
 pub use profile::{ArcGeom, Loop, Profile, Segment};
 pub use solid::{
-    mirror, rotation_about, translation, BooleanOp, EdgeInfo, FaceInfo, Prism, RenderMesh, Revolve, Solid, Surface, Tool,
+    mirror, rotation_about, translation, BooleanOp, EdgeClass, EdgeInfo, FaceInfo, Prism, ProjCurve, ProjectedEdge, RenderMesh, Revolve, Solid, Surface, Tool,
     ToolShape,
 };
 

@@ -15,6 +15,7 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 nova-assembly = { path = "../../crates/nova-assembly" }
+nova-drawing = { path = "../../crates/nova-drawing" }
 nova-core = { path = "../../crates/nova-core" }
 nova-kernel = { path = "../../crates/nova-kernel" }
 glam = { workspace = true }

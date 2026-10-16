@@ -54,6 +54,22 @@ mod ffi {
         center: P3,
     }
 
+    /// An edge of a hidden-line projection, in view coordinates (x, y; z = 0).
+    /// category: 0 sharp edge, 1 outline (silhouette), 2 smooth (tangent) edge.
+    /// kind: 0 line a→b, 1 circular arc a→b around `center`, 2 other curve.
+    #[derive(Clone, Debug)]
+    struct ProjEdge {
+        visible: bool,
+        category: u8,
+        kind: u8,
+        a: P3,
+        b: P3,
+        center: P3,
+        radius: f64,
+        /// Sampled polyline, x0 y0 x1 y1 …
+        points: Vec<f64>,
+    }
+
     #[derive(Clone, Copy, Debug)]
     struct Bounds {
         min: P3,
@@ -84,12 +100,13 @@ mod ffi {
         fn common(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
         fn compound_with(c: &Shape, s: &Shape) -> Result<UniquePtr<Shape>>;
         fn write_step(s: &Shape, path: &str) -> Result<()>;
+        fn hlr_project(s: &Shape, dir: P3, x_dir: P3, hidden: bool, deflection: f64) -> Result<Vec<ProjEdge>>;
         fn clone_shape(s: &Shape) -> UniquePtr<Shape>;
         fn is_valid(s: &Shape) -> bool;
     }
 }
 
-pub use ffi::{Bounds, EdgeData, FaceGeom, MeshOut, Seg, P3};
+pub use ffi::{Bounds, EdgeData, FaceGeom, MeshOut, ProjEdge, Seg, P3};
 
 /// Error from an OCCT operation
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,6 +265,13 @@ impl Shape {
         ffi::write_step(self.inner(), p).map_err(err)
     }
 
+    /// Orthographic projection with hidden-line removal. `dir` points from
+    /// the model towards the viewer, `x_dir` is the view's right direction;
+    /// the view's up direction is `dir × x_dir`.
+    pub fn hlr_project(&self, dir: P3, x_dir: P3, hidden: bool, deflection: f64) -> Result<Vec<ProjEdge>> {
+        ffi::hlr_project(self.inner(), dir, x_dir, hidden, deflection).map_err(err)
+    }
+
     pub fn is_valid(&self) -> bool {
         ffi::is_valid(self.inner())
     }
@@ -340,6 +364,31 @@ mod tests {
         let c = Shape::compound(&[&a, &b, &far]).unwrap();
         assert_eq!(c.solid_count(), 3);
         assert!((c.volume().unwrap() - 360_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hidden_line_projection() {
+        // 100 x 60 x 20 block with a blind Ø10 pocket, 8 deep, from the bottom
+        let pocket = Shape::planar_face(&[circle(50.0, 30.0, 5.0, 0.0)]).unwrap().prism(P3::new(0.0, 0.0, 8.0)).unwrap();
+        let s = block().cut(&pocket).unwrap();
+        // Front view: viewer on +Z, looking at the top face; the pocket is hidden
+        let front = s.hlr_project(P3::new(0.0, 0.0, 1.0), P3::new(1.0, 0.0, 0.0), true, 0.01).unwrap();
+        let visible: Vec<_> = front.iter().filter(|e| e.visible).collect();
+        assert_eq!(visible.iter().filter(|e| e.kind == 0).count(), 4, "{front:#?}");
+        assert!(visible.iter().all(|e| e.kind == 0));
+        let hidden_circles: Vec<_> = front.iter().filter(|e| !e.visible && e.kind == 1).collect();
+        assert!(!hidden_circles.is_empty());
+        assert!(hidden_circles.iter().all(|e| (e.radius - 5.0).abs() < 1e-9));
+        // View coordinates: x along +X, y along +Y (dir × x_dir = Z × X = Y)
+        let c = hidden_circles[0].center;
+        assert!((c.x - 50.0).abs() < 1e-9 && (c.y - 30.0).abs() < 1e-9, "{c:?}");
+        // Bottom view: the pocket opening is a visible circle
+        let bottom = s.hlr_project(P3::new(0.0, 0.0, -1.0), P3::new(1.0, 0.0, 0.0), true, 0.01).unwrap();
+        assert!(bottom.iter().any(|e| e.visible && e.kind == 1));
+        // Side view (viewer on +X, right = -Z): pocket walls are hidden lines
+        let side = s.hlr_project(P3::new(1.0, 0.0, 0.0), P3::new(0.0, 0.0, -1.0), true, 0.01).unwrap();
+        assert!(side.iter().filter(|e| !e.visible && e.kind == 0).count() >= 2, "{side:#?}");
+        assert!(side.iter().filter(|e| e.visible).all(|e| e.kind == 0));
     }
 
     #[test]

@@ -25,6 +25,11 @@
 #include <Bnd_Box.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
 #include <GC_MakeArcOfCircle.hxx>
+#include <HLRAlgo_Projector.hxx>
+#include <HLRBRep_Algo.hxx>
+#include <HLRBRep_HLRToShape.hxx>
+#include <BRepLib.hxx>
+#include <gp_Circ.hxx>
 #include <GProp_GProps.hxx>
 #include <Interface_Static.hxx>
 #include <Message.hxx>
@@ -437,6 +442,77 @@ void write_step(const Shape &s, rust::Str path) {
       throw std::runtime_error("cannot write " + p);
     }
     return 0;
+  });
+}
+
+namespace {
+
+// Edges of one HLR result compound, in view coordinates (z = 0)
+void collect_projected(const TopoDS_Shape &c, bool visible, uint8_t category, double deflection,
+                       rust::Vec<ProjEdge> &out) {
+  if (c.IsNull()) {
+    return;
+  }
+  BRepLib::BuildCurves3d(c);
+  for (TopExp_Explorer ex(c, TopAbs_EDGE); ex.More(); ex.Next()) {
+    const TopoDS_Edge &edge = TopoDS::Edge(ex.Current());
+    if (BRep_Tool::Degenerated(edge)) {
+      continue;
+    }
+    BRepAdaptor_Curve curve(edge);
+    ProjEdge e;
+    e.visible = visible;
+    e.category = category;
+    e.kind = 2;
+    e.a = p3(curve.Value(curve.FirstParameter()));
+    e.b = p3(curve.Value(curve.LastParameter()));
+    e.center = P3{0, 0, 0};
+    e.radius = 0.0;
+    if (curve.GetType() == GeomAbs_Line) {
+      e.kind = 0;
+    } else if (curve.GetType() == GeomAbs_Circle) {
+      e.kind = 1;
+      gp_Circ circ = curve.Circle();
+      e.center = p3(circ.Location());
+      e.radius = circ.Radius();
+    }
+    GCPnts_QuasiUniformDeflection pts(curve, deflection);
+    if (pts.IsDone()) {
+      for (int k = 1; k <= pts.NbPoints(); ++k) {
+        gp_Pnt p = pts.Value(k);
+        e.points.push_back(p.X());
+        e.points.push_back(p.Y());
+      }
+    } else {
+      e.points.push_back(e.a.x);
+      e.points.push_back(e.a.y);
+      e.points.push_back(e.b.x);
+      e.points.push_back(e.b.y);
+    }
+    out.push_back(std::move(e));
+  }
+}
+
+} // namespace
+
+rust::Vec<ProjEdge> hlr_project(const Shape &s, P3 dir, P3 x_dir, bool hidden, double deflection) {
+  return guard("projection", [&]() {
+    Handle(HLRBRep_Algo) algo = new HLRBRep_Algo();
+    algo->Add(s.s);
+    gp_Ax2 frame(gp_Pnt(0, 0, 0), gp_Dir(dir.x, dir.y, dir.z), gp_Dir(x_dir.x, x_dir.y, x_dir.z));
+    algo->Projector(HLRAlgo_Projector(frame));
+    algo->Update();
+    algo->Hide();
+    HLRBRep_HLRToShape shapes(algo);
+    rust::Vec<ProjEdge> out;
+    collect_projected(shapes.VCompound(), true, 0, deflection, out);
+    collect_projected(shapes.OutLineVCompound(), true, 1, deflection, out);
+    collect_projected(shapes.Rg1LineVCompound(), true, 2, deflection, out);
+    if (hidden) {
+      collect_projected(shapes.HCompound(), false, 0, deflection, out);
+      collect_projected(shapes.OutLineHCompound(), false, 1, deflection, out);
+    }
+    return out;
   });
 }
 
